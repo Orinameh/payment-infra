@@ -25,6 +25,7 @@ import (
 
 type Handler struct {
 	Pool     *pgxpool.Pool
+	ReadPool *pgxpool.Pool // optional replica; nil means read from Pool
 	Users    *user.Service
 	Wallets  *wallet.Service
 	Payments *payment.Service
@@ -35,6 +36,16 @@ type Handler struct {
 	Issuer         string
 	Audience       string
 	SignToken      func(claims auth.Claims) (string, error)
+}
+
+// read returns the replica for replica-safe queries (lists, history).
+// Balance reads stay on the primary (or cache) so a client never sees
+// a stale balance immediately after its own transfer.
+func (h *Handler) read() *pgxpool.Pool {
+	if h.ReadPool != nil {
+		return h.ReadPool
+	}
+	return h.Pool
 }
 
 func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) http.Handler {
@@ -397,7 +408,7 @@ func (h *Handler) CreateWallet(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListWallets(w http.ResponseWriter, r *http.Request) {
 	claims := auth.MustClaims(r.Context())
 	userID, _ := uuid.Parse(claims.Subject)
-	ws, err := h.Wallets.ListByUser(r.Context(), h.Pool, userID)
+	ws, err := h.Wallets.ListByUser(r.Context(), h.read(), userID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "list failed")
 		return
@@ -445,7 +456,7 @@ func (h *Handler) GetWalletHistory(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	entries, err := h.Ledger.History(r.Context(), h.Pool, id, limit, offset)
+	entries, err := h.Ledger.History(r.Context(), h.read(), id, limit, offset)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "history failed")
 		return

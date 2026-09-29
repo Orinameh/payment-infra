@@ -153,6 +153,20 @@ func main() {
 		SignToken:      signToken,
 	}
 
+	// Optional read replica. History and wallet lists go here; balance
+	// reads stay on the primary (or cache) to avoid stale-read anomalies
+	// after a client's own transfer.
+	if readDSN := os.Getenv("READ_DATABASE_URL"); readDSN != "" {
+		readPool, err := db.Connect(ctx, readDSN, 10)
+		if err != nil {
+			logger.Warn("read replica unavailable, reading from primary", "err", err)
+		} else {
+			defer readPool.Close()
+			h.ReadPool = readPool
+			logger.Info("read replica enabled")
+		}
+	}
+
 	mux := httpapi.NewRouter(h, authenticator, httpx.NewRateLimiter(10, 20))
 
 	// ── Middleware chain (global only) ──────────────────────────
