@@ -36,6 +36,9 @@ type Handler struct {
 	Issuer         string
 	Audience       string
 	SignToken      func(claims auth.Claims) (string, error)
+
+	DPOName  string
+	DPOEmail string
 }
 
 // read returns the replica for replica-safe queries (lists, history).
@@ -57,6 +60,9 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) htt
 
 	mux.HandleFunc("GET /v1/readyz", h.Readyz)
 
+	// Privacy (public contact; NDPA 2023 requires a reachable DPO)
+	mux.HandleFunc("GET /v1/privacy/dpo", h.GetDPO)
+
 	// Auth (public — must NOT sit behind AuthRequired)
 	mux.HandleFunc("POST /v1/auth/register", h.Register)
 	mux.HandleFunc("POST /v1/auth/verify", h.Verify)
@@ -76,6 +82,8 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) htt
 
 	// Users
 	mux.Handle("GET /v1/users/me", protected(h.GetMe))
+	mux.Handle("GET /v1/users/me/export", protected(h.ExportMe))
+	mux.Handle("POST /v1/users/me/erasure", protected(h.EraseMe))
 
 	// Wallets
 	mux.Handle("POST /v1/wallets", protected(h.CreateWallet))
@@ -376,6 +384,62 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
+}
+
+// GetDPO returns the Data Protection Officer contact. NDPA 2023 makes a
+// reachable DPO mandatory; this endpoint is public by design.
+func (h *Handler) GetDPO(w http.ResponseWriter, _ *http.Request) {
+	name := h.DPOName
+	if name == "" {
+		name = "Data Protection Officer"
+	}
+	email := h.DPOEmail
+	if email == "" {
+		email = "dpo@example.com"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "email": email})
+}
+
+// ExportMe returns the caller's data-subject bundle (profile, wallets,
+// consents, own audit trail).
+func (h *Handler) ExportMe(w http.ResponseWriter, r *http.Request) {
+	claims := auth.MustClaims(r.Context())
+	userID, _ := uuid.Parse(claims.Subject)
+	exp, err := h.Users.ExportUser(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, CodeUserNotFound, "user not found")
+			return
+		}
+		h.Logger.Error("export", "err", err)
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "export failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, exp)
+}
+
+// EraseMe executes the right-to-erasure: PII removed, account closed,
+// sessions revoked. Financial records are retained for AML. 202 because
+// downstream propagation (webhook unregistration etc.) is async.
+func (h *Handler) EraseMe(w http.ResponseWriter, r *http.Request) {
+	claims := auth.MustClaims(r.Context())
+	userID, _ := uuid.Parse(claims.Subject)
+	if err := h.Users.Erase(r.Context(), userID); err != nil {
+		switch {
+		case errors.Is(err, user.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeUserNotFound, "user not found")
+		case errors.Is(err, user.ErrAlreadyErased):
+			writeErr(w, http.StatusConflict, CodeUserErasureConflict, "account already erased")
+		default:
+			h.Logger.Error("erasure", "err", err)
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "erasure failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "erasure_accepted",
+		"message": "PII removed and account closed. Transaction records retained per AML requirements.",
+	})
 }
 
 // ---- wallet handlers ----

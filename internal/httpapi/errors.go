@@ -11,6 +11,7 @@ const (
 	CodeAuthConsentRequired      = "AUTH_CONSENT_REQUIRED"
 	CodeUserEmailTaken           = "USER_EMAIL_TAKEN"
 	CodeUserSanctioned           = "USER_SANCTIONED"
+	CodeUserErasureConflict      = "USER_ERASURE_CONFLICT"
 	CodeVerifyInvalidPurpose     = "VERIFY_INVALID_PURPOSE"
 	CodeVerifyTokenInvalid       = "VERIFY_TOKEN_INVALID"
 	CodeAuthAccountLocked        = "AUTH_ACCOUNT_LOCKED"

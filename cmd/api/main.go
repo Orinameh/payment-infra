@@ -151,6 +151,8 @@ func main() {
 		Issuer:         envOr("JWT_ISSUER", "payments-api"),
 		Audience:       envOr("JWT_AUDIENCE", "payments"),
 		SignToken:      signToken,
+		DPOName:        os.Getenv("DPO_NAME"),
+		DPOEmail:       os.Getenv("DPO_EMAIL"),
 	}
 
 	// Optional read replica. History and wallet lists go here; balance

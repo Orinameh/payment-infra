@@ -29,6 +29,7 @@ var (
 	ErrTokenInvalid       = errors.New("user: token invalid or expired")
 	ErrConsentRequired    = errors.New("user: NDPR consent required")
 	ErrSanctioned         = errors.New("user: registration blocked by sanctions screening")
+	ErrAlreadyErased      = errors.New("user: account already erased")
 )
 
 type Status string
