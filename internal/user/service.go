@@ -49,6 +49,9 @@ type User struct {
 	ID              uuid.UUID  `json:"id"`
 	Email           string     `json:"email"`
 	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	// Phone is the masked display form (+234****78). The full number
+	// lives only as AES-256-GCM ciphertext in phone_encrypted and is
+	// never returned by the API.
 	Phone           string     `json:"phone,omitempty"`
 	PhoneVerifiedAt *time.Time `json:"phone_verified_at,omitempty"`
 	FullName        string     `json:"full_name"`
@@ -120,13 +123,32 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*User, error)
 		return nil, fmt.Errorf("user: hash password: %w", err)
 	}
 
+	// Phone at rest: the full number is AES-256-GCM ciphertext in
+	// phone_encrypted; the phone column carries only the masked display
+	// form (+234****78), never the full number. A full phone in the
+	// database is a breach-report event — fail closed when the
+	// encryptor is unavailable.
+	var phoneMasked *string
+	var phoneCT []byte
+	if in.Phone != "" {
+		if s.enc == nil {
+			return nil, fmt.Errorf("user: phone encryption unavailable: %w", ErrMFAUnavailable)
+		}
+		m := crypto.MaskPhone(in.Phone)
+		phoneMasked = &m
+		phoneCT, err = s.enc.EncryptString(in.Phone)
+		if err != nil {
+			return nil, fmt.Errorf("user: encrypt phone: %w", err)
+		}
+	}
+
 	var u User
 	err = db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
-			INSERT INTO users (email, phone, password_hash, full_name, consent_given_at)
-			VALUES ($1, NULLIF($2,''), $3, $4, now())
-			RETURNING id, email, phone, full_name, status, kyc_tier, created_at`,
-			strings.ToLower(in.Email), in.Phone, string(hash), in.FullName,
+			INSERT INTO users (email, phone, phone_encrypted, password_hash, full_name, consent_given_at)
+			VALUES ($1, $2, $3, $4, $5, now())
+			RETURNING id, email, COALESCE(phone,''), full_name, status, kyc_tier, created_at`,
+			strings.ToLower(in.Email), phoneMasked, phoneCT, string(hash), in.FullName,
 		).Scan(&u.ID, &u.Email, &u.Phone, &u.FullName, &u.Status, &u.KYCTier, &u.CreatedAt)
 		if err != nil {
 			if db.IsUniqueViolation(err) {
@@ -230,7 +252,7 @@ func (s *Service) VerifyToken(ctx context.Context,
 		}
 
 		err = tx.QueryRow(ctx, `
-			SELECT id, email, email_verified_at, phone, phone_verified_at,
+			SELECT id, email, email_verified_at, COALESCE(phone,''), phone_verified_at,
 			       full_name, status, kyc_tier, created_at
 			FROM users WHERE id = $1`, userID,
 		).Scan(&u.ID, &u.Email, &u.EmailVerifiedAt, &u.Phone, &u.PhoneVerifiedAt,
@@ -306,7 +328,7 @@ func (s *Service) Authenticate(ctx context.Context,
 		lockedUntil  *time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, phone, full_name, status, kyc_tier, created_at,
+		SELECT id, email, COALESCE(phone,''), full_name, status, kyc_tier, created_at,
 		       password_hash, failed_login_count, locked_until
 		FROM users WHERE email = $1`, strings.ToLower(email),
 	).Scan(&u.ID, &u.Email, &u.Phone, &u.FullName, &u.Status, &u.KYCTier,
