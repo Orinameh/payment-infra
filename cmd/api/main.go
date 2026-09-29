@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"payment-infra/internal/audit"
 	"payment-infra/internal/auth"
+	"payment-infra/internal/cache"
 	"payment-infra/internal/crypto"
 	"payment-infra/internal/fraud"
 	"payment-infra/internal/httpapi"
@@ -48,6 +49,28 @@ func main() {
 	}
 	defer pool.Close()
 
+	// ── Redis (optional balance cache) ──────────────────────────
+	// If REDIS_ADDR is unset or unreachable, the API runs without a
+	// cache — every balance read hits PostgreSQL. Cache absence must
+	// never fail startup.
+	var walletCache *cache.WalletCache
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rdb, err := cache.Connect(ctx, cache.Config{
+			Addr:         addr,
+			Password:     os.Getenv("REDIS_PASSWORD"),
+			DialTimeout:  2 * time.Second,
+			ReadTimeout:  time.Second,
+			WriteTimeout: time.Second,
+		})
+		if err != nil {
+			logger.Warn("redis unavailable, running without balance cache", "err", err)
+		} else {
+			defer func() { _ = rdb.Close() }()
+			logger.Info("redis balance cache enabled", "addr", addr)
+			walletCache = cache.NewWalletCache(rdb)
+		}
+	}
+
 	// ── JWT keys ──────────────────────────────────────────────────
 	pubKey, err := os.ReadFile(envOr("JWT_PUBLIC_KEY_PATH", "/run/secrets/jwt_public.pem"))
 	if err != nil {
@@ -83,6 +106,9 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────
 	auditRec := &audit.Recorder{}
 	walletSvc := wallet.NewService(auditRec)
+	if walletCache != nil {
+		walletSvc.SetCache(walletCache)
+	}
 	ledgerSvc := ledger.NewService()
 	fraudSvc := fraud.NewService(pool)
 	userSvc := user.NewService(pool, auditRec)

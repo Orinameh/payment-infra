@@ -115,6 +115,26 @@ func (h *Handler) ownerCheck(ctx context.Context, walletID uuid.UUID) (*wallet.W
 	return w, nil
 }
 
+// ownerCheckCached is the read-path variant: balance display served
+// from Redis when warm. Ownership (user_id) is immutable, so the cached
+// copy authorizes as well as the row. Mutating paths keep using
+// ownerCheck (authoritative) since the tx re-locks regardless.
+func (h *Handler) ownerCheckCached(ctx context.Context, walletID uuid.UUID) (*wallet.Wallet, error) {
+	claims := auth.MustClaims(ctx)
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return nil, errors.New("invalid subject")
+	}
+	w, err := h.Wallets.GetCached(ctx, h.Pool, walletID)
+	if err != nil {
+		return nil, err
+	}
+	if w.UserID != userID && claims.Role != "admin" {
+		return nil, errForbidden
+	}
+	return w, nil
+}
+
 // Readyz is a dependency-aware readiness probe. /v1/healthz only proves
 // the process is alive; readyz proves it can serve traffic.
 func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +411,7 @@ func (h *Handler) GetWallet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid wallet id")
 		return
 	}
-	wlt, err := h.ownerCheck(r.Context(), id)
+	wlt, err := h.ownerCheckCached(r.Context(), id)
 	if err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrNotFound):
@@ -412,7 +432,7 @@ func (h *Handler) GetWalletHistory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid wallet id")
 		return
 	}
-	if _, err := h.ownerCheck(r.Context(), id); err != nil {
+	if _, err := h.ownerCheckCached(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrNotFound):
 			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "wallet not found")

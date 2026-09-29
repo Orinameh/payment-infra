@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"payment-infra/internal/audit"
+	"payment-infra/internal/cache"
 	"payment-infra/internal/money"
 	"payment-infra/internal/platform/db"
 	"sort"
@@ -33,9 +34,50 @@ type Wallet struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-type Service struct{ audit *audit.Recorder }
+type Service struct {
+	audit *audit.Recorder
+	cache *cache.WalletCache
+}
 
 func NewService(a *audit.Recorder) *Service { return &Service{audit: a} }
+
+// SetCache enables the Redis cache-aside read path. Nil (default)
+// means every read hits PostgreSQL. The cache is best-effort:
+// invalidation failures self-heal at TTL expiry, and PostgreSQL
+// remains the source of truth.
+func (s *Service) SetCache(c *cache.WalletCache) { s.cache = c }
+
+func (s *Service) invalidate(ctx context.Context, ids ...uuid.UUID) {
+	if s.cache != nil {
+		s.cache.DelWallets(ctx, ids...)
+	}
+}
+
+// GetCached serves balance reads from Redis when possible, falling
+// back to PostgreSQL on a miss. Use for display/read endpoints only —
+// transactional code (Debit/Credit/Transfer) must use lock + Get so it
+// never acts on a stale balance.
+func (s *Service) GetCached(ctx context.Context, q db.Querier, id uuid.UUID) (*Wallet, error) {
+	if s.cache != nil {
+		if cw, ok := s.cache.GetWallet(ctx, id); ok {
+			return &Wallet{
+				ID: cw.ID, UserID: cw.UserID, Currency: cw.Currency,
+				Balance: cw.Balance, Version: cw.Version, Status: cw.Status,
+			}, nil
+		}
+	}
+	w, err := s.Get(ctx, q, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.cache != nil {
+		s.cache.SetWallet(ctx, &cache.CachedWallet{
+			ID: w.ID, UserID: w.UserID, Currency: w.Currency,
+			Balance: w.Balance, Version: w.Version, Status: w.Status,
+		})
+	}
+	return w, nil
+}
 
 func (s *Service) Create(ctx context.Context, q db.Querier, userID uuid.UUID, currency string) (*Wallet, error) {
 	var w Wallet
@@ -174,6 +216,7 @@ func (s *Service) Debit(ctx context.Context, tx pgx.Tx,
 	if err := s.applyDelta(ctx, tx, id, -amount.Minor, w.Version); err != nil {
 		return nil, err
 	}
+	s.invalidate(ctx, id)
 
 	w.Balance -= amount.Minor
 	w.Version++
@@ -216,6 +259,7 @@ func (s *Service) Credit(ctx context.Context, tx pgx.Tx,
 	if err := s.applyDelta(ctx, tx, id, amount.Minor, w.Version); err != nil {
 		return nil, err
 	}
+	s.invalidate(ctx, id)
 
 	w.Balance += amount.Minor
 	w.Version++
@@ -316,6 +360,7 @@ func (s *Service) Transfer(ctx context.Context, tx pgx.Tx,
 	if err := s.applyDelta(ctx, tx, toID, amount.Minor, to.Version); err != nil {
 		return err
 	}
+	s.invalidate(ctx, fromID, toID)
 
 	if s.audit != nil {
 		if err := s.audit.Record(ctx, tx, audit.Event{
