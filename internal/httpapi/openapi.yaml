@@ -92,7 +92,7 @@ paths:
                 password: { type: string }
       responses:
         '200': { description: Tokens issued }
-        '401': { description: AUTH_INVALID_CREDENTIALS }
+        '401': { description: AUTH_INVALID_CREDENTIALS / AUTH_MFA_REQUIRED }
         '403': { description: AUTH_NOT_ACTIVE }
         '429': { description: AUTH_ACCOUNT_LOCKED }
   /v1/auth/refresh:
@@ -108,6 +108,26 @@ paths:
       security: []
       responses:
         '204': { description: Revoked }
+  /v1/mfa/setup:
+    post:
+      summary: Begin TOTP enrollment (returns secret once)
+      responses:
+        '200': { description: Secret + otpauth URL }
+  /v1/mfa/confirm:
+    post:
+      summary: Confirm TOTP enrollment with a code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, example: '287082' }
+      responses:
+        '200': { description: Enrolled }
+        '400': { description: AUTH_MFA_REQUIRED }
   /v1/users/me:
     get:
       summary: Current profile
@@ -164,7 +184,7 @@ paths:
         '200': { description: History entries }
   /v1/transfers:
     post:
-      summary: Transfer between wallets
+      summary: Transfer between wallets (requires MFA step-up token)
       parameters:
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -185,7 +205,7 @@ paths:
         '201': { description: Posted }
         '202': { description: TRANSFER_UNDER_REVIEW }
         '400': { description: PAYMENT_IDEMPOTENCY_KEY_REQUIRED / WALLET_INVALID_ID }
-        '403': { description: FORBIDDEN }
+        '403': { description: FORBIDDEN / MFA required }
         '404': { description: WALLET_NOT_FOUND }
         '409': { description: TRANSFER_CONCURRENT_MODIFICATION }
         '422': { description: TRANSFER_INSUFFICIENT_FUNDS / TRANSFER_WALLET_FROZEN / TRANSFER_CURRENCY_MISMATCH / TRANSFER_LIMIT_EXCEEDED / TRANSFER_BLOCKED_FRAUD }

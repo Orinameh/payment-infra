@@ -17,6 +17,7 @@ const (
 	CodeAuthAccountLocked        = "AUTH_ACCOUNT_LOCKED"
 	CodeAuthNotActive            = "AUTH_NOT_ACTIVE"
 	CodeAuthInvalidCredentials   = "AUTH_INVALID_CREDENTIALS"
+	CodeAuthMFARequired          = "AUTH_MFA_REQUIRED"
 	CodeAuthRefreshInvalid       = "AUTH_REFRESH_INVALID"
 	CodeUserNotFound             = "USER_NOT_FOUND"
 	CodeWalletInvalidID          = "WALLET_INVALID_ID"

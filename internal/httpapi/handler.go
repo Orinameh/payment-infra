@@ -100,8 +100,17 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl, authRL *httpx.RateLimi
 	mux.Handle("GET /v1/wallets/{id}", protected(h.GetWallet))
 	mux.Handle("GET /v1/wallets/{id}/transactions", protected(h.GetWalletHistory))
 
-	// Transfers
-	mux.Handle("POST /v1/transfers", protected(h.Transfer))
+	// Transfers — MFA-gated: money moves only on tokens minted
+	// after TOTP step-up (PCI DSS 4.0 MFA for the CDE).
+	mux.Handle("POST /v1/transfers", httpx.Chain(http.HandlerFunc(h.Transfer),
+		httpx.AuthRequired(authn),
+		httpx.RequireMFA,
+		httpx.RateLimit(rl),
+	))
+
+	// MFA enrollment (protected; setup before step-up is required)
+	mux.Handle("POST /v1/mfa/setup", protected(h.SetupMFA))
+	mux.Handle("POST /v1/mfa/confirm", protected(h.ConfirmMFA))
 
 	mux.Handle("GET /metrics", promhttp.Handler())
 
@@ -177,9 +186,12 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 // mintAccessToken builds the JWT claims for a user and signs them.
 // It collapses the Login/Refresh duplication into one place so expiry,
 // issuer, and AMR stay consistent across both flows.
-func (h *Handler) mintAccessToken(u *user.User) (string, error) {
+func (h *Handler) mintAccessToken(u *user.User, amr []string) (string, error) {
 	if h.SignToken == nil {
 		return "", errors.New("httpapi: SignToken not configured")
+	}
+	if len(amr) == 0 {
+		amr = []string{"pwd"}
 	}
 	return h.SignToken(auth.Claims{
 		Subject:   u.ID.String(),
@@ -189,7 +201,7 @@ func (h *Handler) mintAccessToken(u *user.User) (string, error) {
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
 		Role:      "user",
 		KYCTier:   u.KYCTier,
-		AMR:       []string{"pwd"},
+		AMR:       amr,
 	})
 }
 
@@ -286,6 +298,9 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 type loginBody struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// TOTPCode carries the 6-digit authenticator code. Required only
+	// when the account has MFA enrolled; ignored otherwise.
+	TOTPCode string `json:"totp_code,omitempty"`
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +323,22 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.mintAccessToken(u)
+	// Step-up: enrolled accounts must present a valid TOTP code.
+	// Unenrolled accounts pass through with password-only AMR.
+	amr := []string{"pwd"}
+	if enrolled, err := h.Users.MFAEnrolled(r.Context(), u.ID); err != nil {
+		h.Logger.Error("mfa check", "err", err)
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "login failed")
+		return
+	} else if enrolled {
+		if err := h.Users.VerifyMFACode(r.Context(), u.ID, body.TOTPCode); err != nil {
+			writeErr(w, http.StatusUnauthorized, CodeAuthMFARequired, "valid MFA code required")
+			return
+		}
+		amr = []string{"pwd", "otp"}
+	}
+
+	access, err := h.mintAccessToken(u, amr)
 	if err != nil {
 		h.Logger.Error("sign token", "err", err)
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "login failed")
@@ -355,7 +385,15 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.mintAccessToken(u)
+	// Refresh preserves the session's auth strength: MFA-enrolled
+	// accounts keep the otp method without re-prompting (the refresh
+	// token itself was issued post-MFA).
+	amr := []string{"pwd"}
+	if enrolled, err := h.Users.MFAEnrolled(r.Context(), u.ID); err == nil && enrolled {
+		amr = []string{"pwd", "otp"}
+	}
+
+	access, err := h.mintAccessToken(u, amr)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "token issuance failed")
 		return
@@ -377,6 +415,60 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.Users.RevokeRefreshToken(r.Context(), body.RefreshToken)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetupMFA begins TOTP enrollment. Returns the secret + otpauth URL
+// once for QR display; the secret is never returned again.
+func (h *Handler) SetupMFA(w http.ResponseWriter, r *http.Request) {
+	claims := auth.MustClaims(r.Context())
+	userID, _ := uuid.Parse(claims.Subject)
+	secret, uri, err := h.Users.BeginMFA(r.Context(), userID, h.Issuer)
+	if err != nil {
+		switch {
+		case errors.Is(err, user.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeUserNotFound, "user not found")
+		default:
+			h.Logger.Error("mfa setup", "err", err)
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "MFA setup failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"secret":       secret,
+		"otpauth_url":  uri,
+		"instructions": "Scan the QR code, then confirm with a 6-digit code.",
+	})
+}
+
+type confirmMFABody struct {
+	Code string `json:"code"`
+}
+
+// ConfirmMFA completes enrollment by verifying a code from the new
+// authenticator. Until confirmed, the secret grants nothing.
+func (h *Handler) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
+	var body confirmMFABody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
+		return
+	}
+	claims := auth.MustClaims(r.Context())
+	userID, _ := uuid.Parse(claims.Subject)
+	if err := h.Users.ConfirmMFA(r.Context(), userID, body.Code); err != nil {
+		switch {
+		case errors.Is(err, user.ErrMFAInvalid):
+			writeErr(w, http.StatusBadRequest, CodeAuthMFARequired, "invalid MFA code")
+		case errors.Is(err, user.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeUserNotFound, "user not found")
+		default:
+			h.Logger.Error("mfa confirm", "err", err)
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "MFA confirmation failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "mfa_enrolled",
+	})
 }
 
 // ---- user handlers ----

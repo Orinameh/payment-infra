@@ -98,7 +98,8 @@ func main() {
 		logger.Error("encryption key", "err", err)
 		os.Exit(1)
 	}
-	if _, err := crypto.NewEncryptor(encKey); err != nil {
+	enc, err := crypto.NewEncryptor(encKey)
+	if err != nil {
 		logger.Error("encryption key", "err", err)
 		os.Exit(1)
 	}
@@ -112,6 +113,7 @@ func main() {
 	ledgerSvc := ledger.NewService()
 	fraudSvc := fraud.NewService(pool)
 	userSvc := user.NewService(pool, auditRec)
+	userSvc.SetEncryptor(enc)
 
 	// NIBSS provider is optional. If NIBSS_MODE is unset, this
 	// returns (nil, nil) and the payment service runs without

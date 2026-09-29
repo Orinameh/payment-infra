@@ -10,6 +10,7 @@ import (
 	"net"
 	"payment-infra/internal/audit"
 	"payment-infra/internal/auth"
+	"payment-infra/internal/crypto"
 	"payment-infra/internal/platform/db"
 	"strings"
 	"time"
@@ -30,6 +31,9 @@ var (
 	ErrConsentRequired    = errors.New("user: NDPR consent required")
 	ErrSanctioned         = errors.New("user: registration blocked by sanctions screening")
 	ErrAlreadyErased      = errors.New("user: account already erased")
+	ErrMFARequired        = errors.New("user: MFA code required")
+	ErrMFAInvalid         = errors.New("user: MFA code invalid")
+	ErrMFAUnavailable     = errors.New("user: MFA unavailable")
 )
 
 type Status string
@@ -57,6 +61,9 @@ type Service struct {
 	pool       *pgxpool.Pool
 	audit      *audit.Recorder
 	bcryptCost int
+	// enc encrypts TOTP secrets (and PII) at rest. Wired via
+	// SetEncryptor; MFA enrollment fails closed when nil.
+	enc *crypto.Encryptor
 	// dummyHash is a real bcrypt hash (60 chars, valid salt, valid
 	// digest). Comparing a password against it takes the same ~250ms
 	// as a real comparison, so login response time does not reveal
