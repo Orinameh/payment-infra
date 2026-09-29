@@ -29,46 +29,87 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT w.id,
-		       w.balance,
-		       COALESCE(SUM(e.amount), 0)::bigint,
-		       (w.balance - COALESCE(SUM(e.amount), 0))::bigint
-		FROM wallets w
-		LEFT JOIN ledger_entries e ON e.wallet_id = w.id
-		GROUP BY w.id, w.balance
-		HAVING w.balance <> COALESCE(SUM(e.amount), 0)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var discrepancies []Discrepancy
-	for rows.Next() {
-		var d Discrepancy
-		if err := rows.Scan(&d.WalletID, &d.CachedBalance, &d.LedgerSum, &d.Drift); err != nil {
-			return err
+	// Keyset-batched scan: the old single GROUP BY over all wallets and
+	// all entries held a long snapshot and spiked memory/IO on large
+	// tables. Batches of 500 wallets keep each query short and let the
+	// run resume cleanly if the worker restarts (progress is per batch).
+	const batch = 500
+	var (
+		lastID        *string
+		checked       int64
+		discrepancies []Discrepancy
+	)
+	for {
+		rows, err := s.pool.Query(ctx, `
+			SELECT w.id::text, w.balance,
+			       COALESCE(SUM(e.amount), 0)::bigint,
+			       (w.balance - COALESCE(SUM(e.amount), 0))::bigint
+			FROM wallets w
+			LEFT JOIN ledger_entries e ON e.wallet_id = w.id
+			WHERE ($1::text IS NULL OR w.id::text > $1)
+			GROUP BY w.id, w.balance
+			ORDER BY w.id
+			LIMIT $2`, lastID, batch)
+		if err != nil {
+			return s.failRun(ctx, runID, err)
 		}
-		discrepancies = append(discrepancies, d)
-		slog.Error("BALANCE DRIFT",
-			"wallet_id", d.WalletID,
-			"cached_minor", d.CachedBalance,
-			"ledger_sum_minor", d.LedgerSum,
-			"drift_minor", d.Drift)
+		var batchIDs []string
+		for rows.Next() {
+			var (
+				id     string
+				cached int64
+				sum    int64
+				drift  int64
+			)
+			if err := rows.Scan(&id, &cached, &sum, &drift); err != nil {
+				rows.Close()
+				return s.failRun(ctx, runID, err)
+			}
+			batchIDs = append(batchIDs, id)
+			checked++
+			if cached != sum {
+				d := Discrepancy{WalletID: id, CachedBalance: cached, LedgerSum: sum, Drift: drift}
+				discrepancies = append(discrepancies, d)
+				slog.Error("BALANCE DRIFT",
+					"wallet_id", d.WalletID,
+					"cached_minor", d.CachedBalance,
+					"ledger_sum_minor", d.LedgerSum,
+					"drift_minor", d.Drift)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return s.failRun(ctx, runID, err)
+		}
+		if len(batchIDs) == 0 {
+			break
+		}
+		lastID = &batchIDs[len(batchIDs)-1]
+		if len(batchIDs) < batch {
+			break
+		}
 	}
 
 	details, _ := json.Marshal(discrepancies)
-	_, err = s.pool.Exec(ctx, `
+	_, err := s.pool.Exec(ctx, `
 		UPDATE reconciliation_runs
 		SET status = 'completed',
-		    wallets_checked = (SELECT COUNT(*) FROM wallets),
-		    discrepancies = $1, drift_details = $2, completed_at = now()
-		WHERE id = $3`, len(discrepancies), details, runID)
+		    wallets_checked = $1,
+		    discrepancies = $2, drift_details = $3, completed_at = now()
+		WHERE id = $4`, checked, len(discrepancies), details, runID)
 	if err != nil {
 		return err
 	}
 	slog.Info("reconciliation complete",
 		"duration", time.Since(start),
+		"wallets_checked", checked,
 		"discrepancies", len(discrepancies))
 	return nil
+}
+
+func (s *Service) failRun(ctx context.Context, runID int64, cause error) error {
+	_, _ = s.pool.Exec(ctx,
+		`UPDATE reconciliation_runs SET status = 'failed', completed_at = now() WHERE id = $1`,
+		runID)
+	return cause
 }

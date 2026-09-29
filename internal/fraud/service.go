@@ -47,6 +47,7 @@ func (s *Service) Check(ctx context.Context, q db.Querier, req CheckRequest) (*R
 
 	result := &Result{Decision: "allow"}
 
+	// velocity_1min: burst pattern (mule / bot behaviour).
 	var count int
 	if err := q.QueryRow(ctx, `
 		SELECT COUNT(*) FROM ledger_entries
@@ -60,9 +61,36 @@ func (s *Service) Check(ctx context.Context, q db.Querier, req CheckRequest) (*R
 		result.RulesTriggered = append(result.RulesTriggered, "velocity_1min")
 	}
 
+	// velocity_24h: sustained abnormal throughput on one wallet.
+	var dayCount int
+	if err := q.QueryRow(ctx, `
+		SELECT COUNT(*) FROM ledger_entries
+		WHERE wallet_id = $1 AND created_at > now() - interval '24 hours'`,
+		req.WalletID).Scan(&dayCount); err != nil {
+		slog.Warn("fraud daily velocity check failed, failing open", "err", err)
+	} else if dayCount > 100 {
+		result.RiskScore += 150
+		result.RulesTriggered = append(result.RulesTriggered, "velocity_24h")
+	}
+
 	if req.Amount.Currency == money.NGN && req.Amount.Minor > 500000 {
 		result.RiskScore += 200
 		result.RulesTriggered = append(result.RulesTriggered, "high_value_ngn")
+	}
+
+	// new_account_high_value: accounts under 24h old moving more than
+	// ₦2,000 in one transfer get extra scrutiny (first-party mule
+	// pattern). Uses the actor's created_at on the tx snapshot.
+	var createdAt time.Time
+	if err := q.QueryRow(ctx,
+		`SELECT created_at FROM users WHERE id = $1`,
+		req.UserID).Scan(&createdAt); err == nil {
+		if time.Since(createdAt) < 24*time.Hour && req.Amount.Minor > 200000 {
+			result.RiskScore += 250
+			result.RulesTriggered = append(result.RulesTriggered, "new_account_high_value")
+		}
+	} else {
+		slog.Warn("fraud account-age check failed, failing open", "err", err)
 	}
 
 	switch {
