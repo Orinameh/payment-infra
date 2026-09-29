@@ -1,0 +1,201 @@
+openapi: 3.0.3
+info:
+  title: Payments Infrastructure API
+  version: 1.0.0
+  description: |
+    User-to-user transfers. Amounts are sent as decimal strings
+    ("5000.50") and stored as int64 minor units. Mutating transfer
+    calls require an Idempotency-Key header. Errors always carry a
+    machine-readable `code` — branch on it, never on `error` text.
+servers:
+  - url: http://localhost:8443
+security:
+  - bearerAuth: []
+paths:
+  /v1/healthz:
+    get:
+      summary: Liveness
+      security: []
+      responses:
+        '200': { description: Process alive }
+  /v1/readyz:
+    get:
+      summary: Readiness (pings Postgres)
+      security: []
+      responses:
+        '200': { description: Ready }
+        '503': { description: Dependency down }
+  /v1/openapi.yaml:
+    get:
+      summary: This spec
+      security: []
+      responses:
+        '200': { description: OpenAPI YAML }
+  /v1/privacy/dpo:
+    get:
+      summary: Data Protection Officer contact (NDPA 2023)
+      security: []
+      responses:
+        '200': { description: DPO contact }
+  /v1/auth/register:
+    post:
+      summary: Register (creates pending user)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, phone, password, full_name, consent_given]
+              properties:
+                email: { type: string, format: email }
+                phone: { type: string, example: '+2348012345678' }
+                password: { type: string, minLength: 12 }
+                full_name: { type: string }
+                consent_given: { type: boolean }
+      responses:
+        '201': { description: Created (dev tokens included in non-prod) }
+        '400': { description: AUTH_WEAK_PASSWORD / AUTH_CONSENT_REQUIRED / REQUEST_INVALID_JSON }
+        '403': { description: USER_SANCTIONED }
+        '409': { description: USER_EMAIL_TAKEN }
+  /v1/auth/verify:
+    post:
+      summary: Verify email or phone
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, purpose]
+              properties:
+                token: { type: string }
+                purpose: { type: string, enum: [email_verify, phone_verify] }
+      responses:
+        '200': { description: Verified }
+        '400': { description: VERIFY_TOKEN_INVALID / VERIFY_INVALID_PURPOSE }
+  /v1/auth/login:
+    post:
+      summary: Login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200': { description: Tokens issued }
+        '401': { description: AUTH_INVALID_CREDENTIALS }
+        '403': { description: AUTH_NOT_ACTIVE }
+        '429': { description: AUTH_ACCOUNT_LOCKED }
+  /v1/auth/refresh:
+    post:
+      summary: Rotate refresh token
+      security: []
+      responses:
+        '200': { description: New token pair }
+        '401': { description: AUTH_REFRESH_INVALID }
+  /v1/auth/logout:
+    post:
+      summary: Revoke refresh token
+      security: []
+      responses:
+        '204': { description: Revoked }
+  /v1/users/me:
+    get:
+      summary: Current profile
+      responses:
+        '200': { description: User }
+        '404': { description: USER_NOT_FOUND }
+  /v1/users/me/export:
+    get:
+      summary: Data-subject export bundle
+      responses:
+        '200': { description: Export }
+  /v1/users/me/erasure:
+    post:
+      summary: Right-to-erasure (PII redacted, AML records retained)
+      responses:
+        '202': { description: Erasure accepted }
+        '409': { description: USER_ERASURE_CONFLICT }
+  /v1/wallets:
+    post:
+      summary: Create wallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currency]
+              properties:
+                currency: { type: string, example: NGN }
+      responses:
+        '201': { description: Wallet }
+        '400': { description: WALLET_CURRENCY_INVALID }
+    get:
+      summary: List own wallets
+      responses:
+        '200': { description: Wallet list }
+  /v1/wallets/{id}:
+    get:
+      summary: Wallet details (cache-aside)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Wallet }
+        '404': { description: WALLET_NOT_FOUND }
+        '403': { description: FORBIDDEN }
+  /v1/wallets/{id}/transactions:
+    get:
+      summary: Paginated ledger history
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200': { description: History entries }
+  /v1/transfers:
+    post:
+      summary: Transfer between wallets
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_wallet_id, to_wallet_id, amount, currency]
+              properties:
+                from_wallet_id: { type: string, format: uuid }
+                to_wallet_id: { type: string, format: uuid }
+                amount: { type: string, example: '5000.50' }
+                currency: { type: string, example: NGN }
+                reference: { type: string }
+                end_to_end_id: { type: string }
+      responses:
+        '201': { description: Posted }
+        '202': { description: TRANSFER_UNDER_REVIEW }
+        '400': { description: PAYMENT_IDEMPOTENCY_KEY_REQUIRED / WALLET_INVALID_ID }
+        '403': { description: FORBIDDEN }
+        '404': { description: WALLET_NOT_FOUND }
+        '409': { description: TRANSFER_CONCURRENT_MODIFICATION }
+        '422': { description: TRANSFER_INSUFFICIENT_FUNDS / TRANSFER_WALLET_FROZEN / TRANSFER_CURRENCY_MISMATCH / TRANSFER_LIMIT_EXCEEDED / TRANSFER_BLOCKED_FRAUD }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: { type: string }
+        code: { type: string, example: TRANSFER_INSUFFICIENT_FUNDS }

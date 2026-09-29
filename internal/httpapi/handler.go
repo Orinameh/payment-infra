@@ -59,6 +59,7 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) htt
 	})
 
 	mux.HandleFunc("GET /v1/readyz", h.Readyz)
+	mux.HandleFunc("GET /v1/openapi.yaml", h.OpenAPI)
 
 	// Privacy (public contact; NDPA 2023 requires a reachable DPO)
 	mux.HandleFunc("GET /v1/privacy/dpo", h.GetDPO)
