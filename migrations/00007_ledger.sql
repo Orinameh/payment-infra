@@ -29,10 +29,14 @@ CREATE INDEX idx_ledger_wallet ON ledger_entries(wallet_id, id);
 CREATE INDEX idx_ledger_tx ON ledger_entries(transaction_id);
 
 -- Append-only at the database level. No UPDATE, no DELETE.
+-- StatementBegin/End: goose splits statements on semicolons, which
+-- would shred the $$ body below. The annotation sends it as one unit.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION ledger_entries_immutable() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION 'ledger_entries is append-only';
 END $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 CREATE TRIGGER trg_ledger_immutable
 BEFORE UPDATE OR DELETE ON ledger_entries

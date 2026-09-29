@@ -22,8 +22,10 @@ CREATE INDEX idx_audit_actor ON audit_log(actor_id, created_at DESC);
 CREATE INDEX idx_audit_entity ON audit_log(entity_type, entity_id);
 CREATE INDEX idx_audit_created ON audit_log(created_at DESC);
 
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION audit_log_immutable() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'audit_log is append-only'; END $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 CREATE TRIGGER trg_audit_immutable
 BEFORE UPDATE OR DELETE ON audit_log
