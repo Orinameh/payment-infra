@@ -46,9 +46,6 @@ It is designed to be extended. The ledger, wallet, and payment modules are stabl
 To avoid ambiguity:
 
 - **No NIBSS NIP adapter.** Integration with the Nigerian interbank switch requires CBN licensing, RSA key exchange with NIBSS, NCS certification, and a full ISO 8583 / NIP message implementation. That is a separate project.
-- **No merchant model.** This is user-to-user. Merchants, CAC verification, and settlement accounts are not implemented.
-- **No webhook delivery worker.** The `webhook_endpoints` and `webhook_deliveries` tables exist, and the outbox publishes events, but no worker reads the delivery queue.
-- **No queue consumer.** The outbox worker publishes to NATS, but there is no subscriber reading events and acting on them.
 - **No admin panel.** Admin actions (suspend user, freeze wallet, refund) must be performed via SQL or added later.
 - **No frontend.** HTTP API only.
 - **No production deployment manifests.** Docker Compose is for local development. Kubernetes, Terraform, and secrets management (Vault / AWS KMS) are not included.
