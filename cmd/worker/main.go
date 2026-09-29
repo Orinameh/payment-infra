@@ -11,6 +11,7 @@ import (
 	"payment-infra/internal/platform/db"
 	"payment-infra/internal/queue"
 	"payment-infra/internal/reconciliation"
+	"payment-infra/internal/snapshot"
 	"payment-infra/internal/webhook"
 	"syscall"
 	"time"
@@ -99,6 +100,22 @@ func main() {
 			case <-t.C:
 				if err := reconSvc.Run(ctx); err != nil {
 					logger.Error("reconciliation", "err", err)
+				}
+			}
+		}
+	}()
+
+	snapSvc := snapshot.NewService(pool)
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := snapSvc.Run(ctx); err != nil {
+					logger.Error("snapshots", "err", err)
 				}
 			}
 		}

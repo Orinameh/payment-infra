@@ -152,12 +152,40 @@ func (s *Service) History(ctx context.Context, q db.Querier,
 	return out, rows.Err()
 }
 
-// RebuildBalance recomputes a wallet balance from the ledger. Used by
-// reconciliation to detect drift.
+// RebuildBalance recomputes a wallet balance from the ledger. It replays
+// only entries after the latest snapshot (see internal/snapshot), so the
+// cost is O(entries since snapshot) instead of O(all entries). With no
+// snapshot yet it falls back to a full sum.
 func (s *Service) RebuildBalance(ctx context.Context, q db.Querier, walletID uuid.UUID) (int64, error) {
-	var sum int64
+	var (
+		snapBalance int64
+		upto        int64
+		hasSnap     bool
+	)
 	err := q.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0) FROM ledger_entries WHERE wallet_id = $1`,
-		walletID).Scan(&sum)
-	return sum, err
+		SELECT balance, entry_id_upto FROM ledger_snapshots
+		WHERE wallet_id = $1 ORDER BY snapshot_at DESC LIMIT 1`,
+		walletID).Scan(&snapBalance, &upto)
+	switch {
+	case err == nil:
+		hasSnap = true
+	case err == pgx.ErrNoRows:
+		// No snapshot: full replay below.
+	default:
+		return 0, err
+	}
+	var tail int64
+	if hasSnap {
+		err = q.QueryRow(ctx, `
+			SELECT COALESCE(SUM(amount), 0) FROM ledger_entries
+			WHERE wallet_id = $1 AND id > $2`, walletID, upto).Scan(&tail)
+	} else {
+		err = q.QueryRow(ctx, `
+			SELECT COALESCE(SUM(amount), 0) FROM ledger_entries WHERE wallet_id = $1`,
+			walletID).Scan(&tail)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return snapBalance + tail, nil
 }
