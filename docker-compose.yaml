@@ -1,0 +1,105 @@
+name: payments-infra
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      POSTGRES_DB: payments
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports: ["5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c random_page_cost=1.1
+      -c log_min_duration_statement=200
+      -c log_lock_waits=on
+      -c deadlock_timeout=1s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
+    command: >
+      redis-server
+      --appendonly no --save ""
+      --maxmemory 512mb --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-devpassword}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-devpassword}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    ports: ["4222:4222", "8222:8222"]
+    volumes:
+      - nats_data:/data
+      - ./deploy/nats.conf:/etc/nats/nats.conf:ro
+    command: ["-c", "/etc/nats/nats.conf"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: { context: ., target: builder }
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
+    command: ["/out/migrate", "up"]
+    restart: "no"
+
+  api:
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    environment:
+      DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-devpassword}
+      NATS_URL: nats://nats:4222
+      PORT: "8443"
+      JWT_ISSUER: payments-api
+      JWT_AUDIENCE: payments
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
+      ENCRYPTION_KEY_B64: ${ENCRYPTION_KEY_B64}
+    ports: ["8443:8443"]
+    volumes:
+      - ./deploy/secrets:/run/secrets:ro
+
+  worker:
+    build: { context: ., target: runtime }
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    environment:
+      DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
+      NATS_URL: nats://nats:4222
+    entrypoint: ["/app/worker"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:

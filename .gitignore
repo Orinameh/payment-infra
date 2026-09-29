@@ -1,0 +1,5 @@
+.env
+deploy/secrets/
+bin/
+*.test
+coverage.out
