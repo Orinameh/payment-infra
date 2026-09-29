@@ -51,7 +51,7 @@ func (h *Handler) read() *pgxpool.Pool {
 	return h.Pool
 }
 
-func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) http.Handler {
+func NewRouter(h *Handler, authn *auth.Authenticator, rl, authRL *httpx.RateLimiter) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -64,12 +64,20 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl *httpx.RateLimiter) htt
 	// Privacy (public contact; NDPA 2023 requires a reachable DPO)
 	mux.HandleFunc("GET /v1/privacy/dpo", h.GetDPO)
 
+	// Public auth endpoints get strict IP-based throttling (they run
+	// before AuthRequired, so per-user keying is impossible — key on
+	// client IP). Without this, registration spam and credential
+	// stuffing are unthrottled; login lockout alone is not enough.
+	throttled := func(next http.HandlerFunc) http.Handler {
+		return httpx.RateLimit(authRL)(next)
+	}
+
 	// Auth (public — must NOT sit behind AuthRequired)
-	mux.HandleFunc("POST /v1/auth/register", h.Register)
-	mux.HandleFunc("POST /v1/auth/verify", h.Verify)
-	mux.HandleFunc("POST /v1/auth/login", h.Login)
-	mux.HandleFunc("POST /v1/auth/refresh", h.Refresh)
-	mux.HandleFunc("POST /v1/auth/logout", h.Logout)
+	mux.Handle("POST /v1/auth/register", throttled(h.Register))
+	mux.Handle("POST /v1/auth/verify", throttled(h.Verify))
+	mux.Handle("POST /v1/auth/login", throttled(h.Login))
+	mux.Handle("POST /v1/auth/refresh", throttled(h.Refresh))
+	mux.Handle("POST /v1/auth/logout", throttled(h.Logout))
 
 	// Protected helpers: auth first (so claims exist), then per-user
 	// rate limiting, then the handler. Auth outer → RateLimit inner is

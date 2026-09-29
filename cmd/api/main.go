@@ -169,7 +169,13 @@ func main() {
 		}
 	}
 
-	mux := httpapi.NewRouter(h, authenticator, httpx.NewRateLimiter(10, 20))
+	mux := httpapi.NewRouter(h, authenticator,
+		httpx.NewRateLimiter(10, 20),
+		// Public auth endpoints: strict per-IP budget (2 rps sustained,
+		// burst 10). Login lockout is per-account; this is per-IP and
+		// covers register/verify spam that lockout cannot see.
+		httpx.NewRateLimiter(2, 10),
+	)
 
 	// ── Middleware chain (global only) ──────────────────────────
 	// Auth and per-user rate limiting are applied per-route inside
