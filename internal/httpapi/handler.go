@@ -174,16 +174,14 @@ func (h *Handler) mintAccessToken(u *user.User) (string, error) {
 		return "", errors.New("httpapi: SignToken not configured")
 	}
 	return h.SignToken(auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   u.ID.String(),
-			Issuer:    h.Issuer,
-			Audience:  jwt.ClaimStrings{h.Audience},
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
-		},
-		Role:    "user",
-		KYCTier: u.KYCTier,
-		AMR:     []string{"pwd"},
+		Subject:   u.ID.String(),
+		Issuer:    h.Issuer,
+		Audience:  jwt.ClaimStrings{h.Audience},
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
+		Role:      "user",
+		KYCTier:   u.KYCTier,
+		AMR:       []string{"pwd"},
 	})
 }
 
