@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux \
       -o /out/migrate ./cmd/migrate
 
 # ── Runtime stage ──────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
