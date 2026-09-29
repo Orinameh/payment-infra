@@ -30,21 +30,32 @@ func (s *Service) Run(ctx context.Context) error {
 		name string
 		sql  string
 	}{
-		{"outbox", `DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 days'`},
-		{"processed_messages", `DELETE FROM processed_messages WHERE processed_at < now() - interval '30 days'`},
-		{"webhook_deliveries", `DELETE FROM webhook_deliveries WHERE status IN ('delivered','dead_letter') AND created_at < now() - interval '90 days'`},
-		{"idempotency_keys", `DELETE FROM idempotency_keys WHERE expires_at < now()`},
-		{"verification_tokens", `DELETE FROM verification_tokens WHERE (consumed_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '7 days'`},
-		{"refresh_tokens", `DELETE FROM refresh_tokens WHERE (revoked_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '60 days'`},
-		{"reconciliation_runs", `DELETE FROM reconciliation_runs WHERE completed_at IS NOT NULL AND completed_at < now() - interval '180 days'`},
+		{"outbox", `DELETE FROM outbox WHERE ctid IN (SELECT ctid FROM outbox WHERE published_at IS NOT NULL AND published_at < now() - interval '30 days' LIMIT 1000)`},
+		{"processed_messages", `DELETE FROM processed_messages WHERE ctid IN (SELECT ctid FROM processed_messages WHERE processed_at < now() - interval '30 days' LIMIT 1000)`},
+		{"webhook_deliveries", `DELETE FROM webhook_deliveries WHERE ctid IN (SELECT ctid FROM webhook_deliveries WHERE status IN ('delivered','dead_letter') AND created_at < now() - interval '90 days' LIMIT 1000)`},
+		{"idempotency_keys", `DELETE FROM idempotency_keys WHERE ctid IN (SELECT ctid FROM idempotency_keys WHERE expires_at < now() LIMIT 1000)`},
+		{"verification_tokens", `DELETE FROM verification_tokens WHERE ctid IN (SELECT ctid FROM verification_tokens WHERE (consumed_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '7 days' LIMIT 1000)`},
+		{"refresh_tokens", `DELETE FROM refresh_tokens WHERE ctid IN (SELECT ctid FROM refresh_tokens WHERE (revoked_at IS NOT NULL OR expires_at < now()) AND created_at < now() - interval '60 days' LIMIT 1000)`},
+		{"reconciliation_runs", `DELETE FROM reconciliation_runs WHERE ctid IN (SELECT ctid FROM reconciliation_runs WHERE completed_at IS NOT NULL AND completed_at < now() - interval '180 days' LIMIT 1000)`},
 	}
 	for _, j := range jobs {
-		tag, err := s.pool.Exec(ctx, j.sql)
-		if err != nil {
-			return err
+		// Chunked: one unbounded DELETE on a large table holds locks
+		// and bloats the WAL. 1k-row chunks keep each statement short;
+		// repeat until a chunk deletes nothing.
+		var total int64
+		for {
+			tag, err := s.pool.Exec(ctx, j.sql)
+			if err != nil {
+				return err
+			}
+			n := tag.RowsAffected()
+			total += n
+			if n == 0 {
+				break
+			}
 		}
-		if n := tag.RowsAffected(); n > 0 {
-			slog.Info("retention pruned", "table", j.name, "rows", n)
+		if total > 0 {
+			slog.Info("retention pruned", "table", j.name, "rows", total)
 		}
 	}
 	return nil
