@@ -97,6 +97,7 @@ services:
     environment:
       DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
       NATS_URL: nats://nats:4222
+      ENCRYPTION_KEY_B64: ${ENCRYPTION_KEY_B64}
     entrypoint: ["/app/worker"]
 
 volumes:

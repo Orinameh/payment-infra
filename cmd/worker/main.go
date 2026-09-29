@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/signal"
 	"payment-infra/internal/audit"
+	"payment-infra/internal/crypto"
 	"payment-infra/internal/outbox"
 	"payment-infra/internal/platform/db"
 	"payment-infra/internal/queue"
 	"payment-infra/internal/reconciliation"
+	"payment-infra/internal/webhook"
 	"syscall"
 	"time"
 )
@@ -53,7 +55,9 @@ func main() {
 		Stream:   "PAYMENTS",
 		Durable:  "payments-worker",
 		Subjects: []string{"payments.>"},
-	}, dispatchEvent)
+	}, func(ctx context.Context, subject string, payload []byte) error {
+		return dispatchEvent(ctx, pool, subject, payload)
+	})
 	if err != nil {
 		logger.Error("consumer", "err", err)
 		os.Exit(1)
@@ -63,6 +67,24 @@ func main() {
 	go func() {
 		if err := consumer.Run(ctx); err != nil {
 			logger.Error("consumer", "err", err)
+		}
+	}()
+
+	// Webhook delivery needs the PII encryption key to decrypt endpoint
+	// HMAC secrets.
+	encKey, err := crypto.KeyFromBase64(os.Getenv("ENCRYPTION_KEY_B64"))
+	if err != nil {
+		logger.Error("encryption key", "err", err)
+		os.Exit(1)
+	}
+	enc, err := crypto.NewEncryptor(encKey)
+	if err != nil {
+		logger.Error("encryption key", "err", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := webhook.NewWorker(pool, enc).Run(ctx); err != nil {
+			logger.Error("webhook", "err", err)
 		}
 	}()
 
@@ -100,16 +122,24 @@ func main() {
 		}
 	}()
 
-	logger.Info("worker running: outbox, consumer, reconciliation, audit")
+	logger.Info("worker running: outbox, consumer, webhooks, reconciliation, audit")
 	<-ctx.Done()
 }
 
 // dispatchEvent routes consumed events to their side-effect handlers.
-// Webhook fan-out is registered here (see internal/webhook); unknown
+// transfer_posted fans out to registered webhook endpoints; unknown
 // subjects log and ack so they never block the consumer.
-func dispatchEvent(ctx context.Context, subject string, payload []byte) error {
-	slog.Info("event consumed", "subject", subject, "bytes", len(payload))
-	return nil
+func dispatchEvent(ctx context.Context, q db.Querier, subject string, payload []byte) error {
+	switch subject {
+	case "payments.transfer_posted":
+		if err := webhook.EnqueueForEvent(ctx, q, subject, payload); err != nil {
+			return err
+		}
+		return nil
+	default:
+		slog.Info("event consumed (no handler)", "subject", subject, "bytes", len(payload))
+		return nil
+	}
 }
 
 func envOr(k, fallback string) string {
