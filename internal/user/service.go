@@ -102,7 +102,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*User, error)
 			"sanctions_hit:"+sanctionSource, in.IP, in.UserAgent)
 		return nil, ErrSanctioned
 	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		// Screening store down: fail CLOSED. Onboarding can retry;
 		// admitting an unscreened user cannot be undone.
 		return nil, fmt.Errorf("user: sanctions screening unavailable: %w", err)
