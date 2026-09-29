@@ -1,6 +1,6 @@
 # Payments Infrastructure
 
-A production-grade payment system for user-to-user transfers, built in Go 1.26 with PostgreSQL, Redis, and NATS JetStream. Amounts are stored as `int64` minor units (kobo, cents, pence) — the industry standard and the format NIBSS NIP uses on the wire.
+A production-grade payment system for user-to-user transfers, built in Go 1.27 with PostgreSQL, Redis, and NATS JetStream. Amounts are stored as `int64` minor units (kobo, cents, pence) — the industry standard and the format NIBSS NIP uses on the wire.
 
 ---
 
@@ -446,7 +446,7 @@ payments-infra/
 
 ### Prerequisites
 
-- Go 1.26+
+- Go 1.27+ (matches `go.mod`; the Docker builder uses `golang:1.27-alpine`)
 - Docker and Docker Compose
 - `openssl` for key generation
 - `uuidgen` for idempotency keys (optional)
