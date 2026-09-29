@@ -593,6 +593,22 @@ The API parses `"5000.50"` into `500050` kobo and stores that. The response incl
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/v1/users/me` | Current user profile |
+| `GET` | `/v1/users/me/export` | Data-subject export bundle |
+| `POST` | `/v1/users/me/erasure` | Right-to-erasure (PII redacted, AML records retained) |
+
+### Privacy
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/privacy/dpo` | DPO contact (public) |
+
+### Ops
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/healthz` | Liveness |
+| `GET` | `/v1/readyz` | Readiness (pings Postgres) |
+| `GET` | `/v1/openapi.yaml` | Embedded OpenAPI contract |
 
 ### Wallets
 
@@ -617,8 +633,12 @@ The API parses `"5000.50"` into `500050` kobo and stores that. The response incl
 ### Error Responses
 
 ```json
-{"error": "insufficient funds"}
+{"error": "insufficient funds", "code": "TRANSFER_INSUFFICIENT_FUNDS"}
 ```
+
+Branch on `code`, never on `error` text. Full code list lives in
+`internal/httpapi/errors.go` and in the OpenAPI contract at
+`GET /v1/openapi.yaml`.
 
 | Status | Meaning |
 |---|---|
@@ -728,66 +748,52 @@ Sensitive headers are never logged.
 
 ## Known Gaps
 
-These are real, known, and documented so they are not forgotten:
+The original 18 gaps are closed except where noted. What was fixed,
+in order:
 
-### Correctness
+1. ~~Fraud alerts lost on rollback~~ — fixed: `RecordAlert` runs outside the tx.
+2. ~~CBN tier limits not enforced~~ — fixed: `checkTierLimit` under the wallet lock.
+3. ~~No audit on verification~~ — fixed: email/phone/activation events recorded.
+4. ~~No audit on failed login~~ — fixed: `auth.login_failed` on its own tx.
+5. **Audit chain global lock — accepted.** One global chain with a
+   transaction-scoped advisory lock. At 1,000+ TPS this serializes
+   money movement. Sharding the chain per user is the escape hatch,
+   but a single chain is easier to verify for compliance; revisit with
+   real throughput data.
+6. ~~Cache not used~~ — fixed: `cache.WalletCache` cache-aside + write invalidation.
+7. ~~No read replicas~~ — fixed: `READ_DATABASE_URL` serves lists/history.
+8. ~~No queue consumer~~ — fixed: durable JetStream consumer + `processed_messages` dedup.
+9. ~~No webhook worker~~ — fixed: HMAC delivery with backoff, dead-letter, circuit breaker.
+10. ~~No snapshot job~~ — fixed: hourly `ledger_snapshots`, snapshot-aware rebuild.
+11. ~~No DPO contact~~ — fixed: `GET /v1/privacy/dpo` via `DPO_NAME`/`DPO_EMAIL`.
+12. ~~No DSAR flow~~ — fixed: export bundle + erasure (PII redacted, ledger retained).
+13. ~~No sanctions screening~~ — fixed: `sanctioned_names` feed table, fail-closed at registration.
+14. ~~No readiness endpoint~~ — fixed: `/v1/readyz`.
+15. ~~No CORS~~ — fixed: allowlist middleware via `ALLOWED_ORIGINS`.
+16. ~~No OpenAPI~~ — fixed: `internal/httpapi/openapi.yaml`, served live.
+17. ~~No structured error codes~~ — fixed: `{error, code}` everywhere.
+18. ~~No integration tests~~ — fixed: unit suite + `TEST_DATABASE_URL`-gated
+    50-racer proof (`make test-integration`).
 
-1. **Fraud alerts are lost on transaction rollback.** `fraud.Service.Check` writes to `aml_alerts` inside the payment transaction. If the payment rolls back, the alert disappears. Fix: write AML alerts on a separate connection, outside the transaction.
+### Remaining (out of scope, need real-world inputs)
 
-2. **CBN tiered limits are not enforced.** The `transaction_limits` table exists and is populated, but no code reads it. Add a check inside `payment.Service.Transfer` that sums the user's daily debits and rejects transfers exceeding the tier limit.
-
-3. **No audit record on verification.** `user.Service.VerifyToken` updates `users.status` to `active` but writes no audit row. Add an audit call in the same transaction.
-
-4. **No audit on failed login.** Failed attempts increment `failed_login_count` but are not audited. For CBN compliance, log them.
-
-### Scale
-
-5. **The audit chain uses a global advisory lock.** `audit.Recorder.Record` acquires `pg_advisory_xact_lock(0x6175646974)` on every call, serializing all money movements. At 1,000+ TPS this becomes the bottleneck. Mitigations: batch audit writes, shard the chain by user, or move to a per-partition chain.
-
-6. **Redis is configured but not used by the read path.** The `cache.WalletCache` type exists but no handler calls it. Balance reads hit PostgreSQL every time. Add cache-aside logic to `GetWallet` and invalidate on commit.
-
-7. **No read replicas.** All queries go to the primary. Balance queries and transaction history could be served from replicas.
-
-### Reliability
-
-8. **No queue consumer.** The outbox publishes to NATS, but no worker subscribes. Webhook deliveries, notifications, and downstream AML reporting have no consumer.
-
-9. **No webhook delivery worker.** The `webhook_deliveries` table is populated by nothing, and no worker drains it.
-
-10. **No snapshot job.** `ledger_snapshots` exists but is never written. Add an hourly job to snapshot balances so `RecomputeBalance` stays O(entries since snapshot) instead of O(all entries).
-
-### Compliance
-
-11. **No DPO contact in the codebase.** NDPA 2023 requires a Data Protection Officer. Add a config value and a `/v1/privacy/dpo` endpoint.
-
-12. **No data subject access request flow.** NDPA requires users to export or delete their data on request. Add endpoints, and be careful: transaction records must be retained for AML (5 years), so deletion means PII removal, not row removal.
-
-13. **No sanctions screening.** CBN requires screening against OFAC, UN, and EU lists. The `sanctions_checks` table was removed in a rewrite; add it back and wire it into registration.
-
-### Operations
-
-14. **No readiness endpoint.** `/v1/healthz` returns 200 even if the database is down. Add `/readyz` that pings dependencies.
-
-15. **No CORS configuration.** Browser clients will be blocked.
-
-16. **No OpenAPI spec.** API consumers have no contract. Generate one from handler annotations.
-
-17. **No structured error codes.** Clients get free-text messages. Add machine-readable codes (`AUTH_INVALID_CREDENTIALS`, `USER_NOT_ACTIVE`) so clients can branch on them.
-
-18. **No integration tests against real Postgres.** The `wallet` package has a concurrency test that skips if no test database is available. Add a `testcontainers-go` setup so it always runs.
+- **NIBSS NIP adapter** — needs CBN licensing and key exchange; seam (`nibss.Provider`) is wired.
+- **Fuzzy sanctions matching** — exact CITEXT match only; the vendor feed job should expand aliases.
+- **Fraud model depth** — four rules (1-min/24-h velocity, high-value, new-account).
+  A real AML engine (graph, device, geo) plugs into `fraud.Service.Check`.
+- **K8s/Terraform/Vault manifests** — Compose remains dev-only.
 
 ---
 
 ## Summary
 
-This is a solid foundation. The money model is correct (`int64` minor units). The ledger is append-only and hash-chained. The wallet debit path is protected by three independent layers (lock, version, CHECK). Authentication uses RS256 with rotation and lockout. PII is encrypted with AES-256-GCM. The audit log is tamper-evident.
-
-The gaps are documented and mostly additive — none of them invalidate the existing design. The most important to close, in order:
-
-1. Fix the fraud alert rollback bug (correctness)
-2. Enforce CBN tier limits (compliance)
-3. Add the queue consumer and webhook delivery worker (the events already flow; something must act on them)
-4. Add the readiness endpoint and CORS (operational basics)
-5. Add OpenAPI and structured error codes (developer experience)
-
-Everything else — read replicas, snapshots, sanctions screening, DPO workflow — can wait until the system is actually deployed and the need is real.
+All 18 documented gaps are closed except the audit-chain global lock
+(accepted bottleneck, sharding path documented) and items that need
+real-world inputs (NIBSS onboarding, sanctions vendor feed, K8s).
+The money model (`int64` minor units), append-only ledger, three-layer
+wallet protection, RS256 auth, AES-256-GCM PII encryption, and the
+hash-chained audit log stand as before — now with cache-aside reads,
+replica-aware queries, an exactly-once event consumer, HMAC webhooks
+with circuit breaking, hourly snapshots, sanctions screening, DSAR
+flows, an OpenAPI contract, stable error codes, and a test suite with
+a 50-racer double-withdrawal proof.
