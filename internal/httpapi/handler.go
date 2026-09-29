@@ -166,6 +166,27 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+// mintAccessToken builds the JWT claims for a user and signs them.
+// It collapses the Login/Refresh duplication into one place so expiry,
+// issuer, and AMR stay consistent across both flows.
+func (h *Handler) mintAccessToken(u *user.User) (string, error) {
+	if h.SignToken == nil {
+		return "", errors.New("httpapi: SignToken not configured")
+	}
+	return h.SignToken(auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   u.ID.String(),
+			Issuer:    h.Issuer,
+			Audience:  jwt.ClaimStrings{h.Audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
+		},
+		Role:    "user",
+		KYCTier: u.KYCTier,
+		AMR:     []string{"pwd"},
+	})
+}
+
 // ---- auth handlers ----
 
 type registerBody struct {
@@ -281,18 +302,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.SignToken(auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   u.ID.String(),
-			Issuer:    h.Issuer,
-			Audience:  jwt.ClaimStrings{h.Audience},
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
-		},
-		Role:    "user",
-		KYCTier: u.KYCTier,
-		AMR:     []string{"pwd"},
-	})
+	access, err := h.mintAccessToken(u)
 	if err != nil {
 		h.Logger.Error("sign token", "err", err)
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "login failed")
@@ -339,18 +349,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := h.SignToken(auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   u.ID.String(),
-			Issuer:    h.Issuer,
-			Audience:  jwt.ClaimStrings{h.Audience},
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.AccessTokenTTL) * time.Second)),
-		},
-		Role:    "user",
-		KYCTier: u.KYCTier,
-		AMR:     []string{"pwd"},
-	})
+	access, err := h.mintAccessToken(u)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, CodeInternalError, "token issuance failed")
 		return
