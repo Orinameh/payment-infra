@@ -11,6 +11,7 @@ import (
 	"payment-infra/internal/platform/db"
 	"payment-infra/internal/queue"
 	"payment-infra/internal/reconciliation"
+	"payment-infra/internal/retention"
 	"payment-infra/internal/snapshot"
 	"payment-infra/internal/webhook"
 	"syscall"
@@ -134,7 +135,10 @@ func main() {
 		}
 	}()
 
-	logger.Info("worker running: outbox, consumer, webhooks, reconciliation, audit")
+	// Retention never touches money tables — only operational buffers.
+	go retention.NewService(pool).RunLoop(ctx, time.Hour)
+
+	logger.Info("worker running: outbox, consumer, webhooks, snapshots, retention, reconciliation, audit")
 	<-ctx.Done()
 }
 

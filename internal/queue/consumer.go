@@ -28,6 +28,9 @@ type Consumer struct {
 	subjects []string
 	pool     *pgxpool.Pool
 	handler  Handler
+	// maxDeliver mirrors the JetStream consumer setting: the poison
+	// guard DLQs at this delivery count, so the two can never drift.
+	maxDeliver int
 }
 
 type ConsumerConfig struct {
@@ -56,7 +59,7 @@ func NewConsumer(pool *pgxpool.Pool, cfg ConsumerConfig, h Handler) (*Consumer, 
 	return &Consumer{
 		conn: nc, js: js,
 		stream: cfg.Stream, durable: cfg.Durable, subjects: cfg.Subjects,
-		pool: pool, handler: h,
+		pool: pool, handler: h, maxDeliver: 5,
 	}, nil
 }
 
@@ -69,7 +72,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		FilterSubjects: c.subjects,
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        30 * time.Second,
-		MaxDeliver:     5,
+		MaxDeliver:     c.maxDeliver,
 	})
 	if err != nil {
 		return fmt.Errorf("queue: create consumer: %w", err)
@@ -108,8 +111,29 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 
 		if herr := c.handler(mctx, msg.Subject(), msg.Data()); herr != nil {
+			// Poison guard: after MaxDeliver attempts the message
+			// would otherwise sit unacked forever, head-blocking the
+			// consumer. Park it in dead_letters and ack — operators
+			// replay from there.
+			var delivered uint64
+			if meta, merr := msg.Metadata(); merr == nil {
+				delivered = meta.NumDelivered
+			}
+			if delivered >= uint64(c.maxDeliver) {
+				slog.Error("consumer poison message to DLQ",
+					"err", herr, "subject", msg.Subject(), "msg_id", id,
+					"deliveries", delivered)
+				_, _ = c.pool.Exec(context.Background(), `
+					INSERT INTO dead_letters (consumer_name, subject, message_id, payload, reason)
+					VALUES ($1, $2, $3, $4, $5)
+					ON CONFLICT (consumer_name, message_id) DO NOTHING`,
+					c.durable, msg.Subject(), id, msg.Data(), herr.Error())
+				_ = msg.Ack()
+				return
+			}
 			slog.Error("consumer handler failed, nacking",
-				"err", herr, "subject", msg.Subject(), "msg_id", id)
+				"err", herr, "subject", msg.Subject(), "msg_id", id,
+				"delivery", delivered)
 			// Remove the claim so the redelivery re-runs the handler.
 			_, _ = c.pool.Exec(context.Background(),
 				`DELETE FROM processed_messages WHERE consumer_name = $1 AND message_id = $2`,
