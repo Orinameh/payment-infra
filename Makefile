@@ -20,6 +20,9 @@ build: ## Build all binaries
 test: ## Run tests with race detector
 	go test -race -count=1 ./...
 
+test-integration: ## Run postgres-backed tests (needs migrations applied)
+	TEST_DATABASE_URL="$(DATABASE_URL)" go test -race -count=1 ./internal/wallet/
+
 lint:
 	golangci-lint run ./...
 
