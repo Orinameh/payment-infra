@@ -82,7 +82,7 @@ services:
       JWT_AUDIENCE: payments
       JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
       JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
-      ENCRYPTION_KEY_B64: ${ENCRYPTION_KEY_B64}
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS}
     ports: ["8443:8443"]
     volumes:
       - ./deploy/secrets:/run/secrets:ro
@@ -97,7 +97,7 @@ services:
     environment:
       DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
       NATS_URL: nats://nats:4222
-      ENCRYPTION_KEY_B64: ${ENCRYPTION_KEY_B64}
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS}
     entrypoint: ["/app/worker"]
 
 volumes:

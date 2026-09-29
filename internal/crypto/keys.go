@@ -58,9 +58,14 @@ func NewKeyRing(keys map[string][]byte, active string) (*KeyRing, error) {
 }
 
 // NewKeyRingFromEnv reads ENCRYPTION_KEYS as "id1:base64,id2:base64"
-// (first entry is active). Falls back to legacy ENCRYPTION_KEY_B64 as
-// id "legacy" so existing deployments keep working.
-func NewKeyRingFromEnv() (*KeyRing, error) {
+// (first entry is active). It returns the source variable name alongside
+// the ring so callers can log exactly where the keys came from — two
+// spellings for one secret is confusing enough without silent precedence.
+//
+// ENCRYPTION_KEY_B64 (single base64 key) is accepted as a legacy fallback
+// (loaded as id "legacy") so pre-rotation deployments keep booting.
+// New deployments must set ENCRYPTION_KEYS only.
+func NewKeyRingFromEnv() (*KeyRing, string, error) {
 	if spec := strings.TrimSpace(os.Getenv("ENCRYPTION_KEYS")); spec != "" {
 		keys := map[string][]byte{}
 		var order []string
@@ -68,25 +73,33 @@ func NewKeyRingFromEnv() (*KeyRing, error) {
 			part = strings.TrimSpace(part)
 			id, b64, ok := strings.Cut(part, ":")
 			if !ok || id == "" || b64 == "" {
-				return nil, fmt.Errorf("crypto: bad ENCRYPTION_KEYS entry %q", part)
+				return nil, "", fmt.Errorf("crypto: bad ENCRYPTION_KEYS entry %q", part)
 			}
 			raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
 			if err != nil {
-				return nil, fmt.Errorf("crypto: key %q: %w", id, err)
+				return nil, "", fmt.Errorf("crypto: key %q: %w", id, err)
 			}
 			if _, dup := keys[id]; dup {
-				return nil, fmt.Errorf("crypto: duplicate key id %q", id)
+				return nil, "", fmt.Errorf("crypto: duplicate key id %q", id)
 			}
 			keys[id] = raw
 			order = append(order, id)
 		}
-		return NewKeyRing(keys, order[0])
+		ring, err := NewKeyRing(keys, order[0])
+		if err != nil {
+			return nil, "", err
+		}
+		return ring, "ENCRYPTION_KEYS", nil
 	}
 	raw, err := KeyFromBase64(strings.TrimSpace(os.Getenv("ENCRYPTION_KEY_B64")))
 	if err != nil {
-		return nil, fmt.Errorf("crypto: legacy key: %w", err)
+		return nil, "", fmt.Errorf("crypto: set ENCRYPTION_KEYS (or legacy ENCRYPTION_KEY_B64): %w", err)
 	}
-	return NewKeyRing(map[string][]byte{"legacy": raw}, "legacy")
+	ring, err := NewKeyRing(map[string][]byte{"legacy": raw}, "legacy")
+	if err != nil {
+		return nil, "", err
+	}
+	return ring, "ENCRYPTION_KEY_B64 (deprecated)", nil
 }
 
 func (r *KeyRing) ActiveID() string { return r.active }

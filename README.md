@@ -339,7 +339,11 @@ A user who registers but never verifies their email should not be able to move m
 | Refresh tokens | SHA-256 hash | `refresh_tokens.token_hash` |
 | Verification tokens | SHA-256 hash | `verification_tokens.token_hash` |
 
-The encryption key is loaded from `ENCRYPTION_KEY_B64` (base64, 32 bytes). It must come from a secrets manager (AWS KMS, Vault, Kubernetes Secret). Never commit it.
+The encryption keyring is loaded from `ENCRYPTION_KEYS` (`"k1:<base64>"`;
+first entry is active) and must come from a secrets manager (AWS KMS,
+Vault, Kubernetes Secret). Never commit it. The single-key
+`ENCRYPTION_KEY_B64` is accepted only as a deprecated fallback for
+pre-rotation deployments — new setups must not use it.
 
 ### Key rotation
 
@@ -475,11 +479,12 @@ openssl rsa -in deploy/secrets/jwt_private.pem \
 # AES-256 encryption key for PII at rest
 openssl rand -base64 32 > deploy/secrets/encryption.key
 
-# Runtime environment variables
+# Runtime environment variables (canonical key variable is
+# ENCRYPTION_KEYS; never commit this file)
 cat > .env <<EOF
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 REDIS_PASSWORD=$(openssl rand -hex 16)
-ENCRYPTION_KEY_B64=$(cat deploy/secrets/encryption.key)
+ENCRYPTION_KEYS="k1:$(cat deploy/secrets/encryption.key)"
 EOF
 
 # Keep secrets out of git
