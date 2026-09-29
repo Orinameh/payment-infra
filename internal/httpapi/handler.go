@@ -86,8 +86,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeErr(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg, "code": code})
 }
 
 // ownerCheck enforces object-level ownership. Every wallet access goes
@@ -120,7 +120,7 @@ func (h *Handler) ownerCheck(ctx context.Context, walletID uuid.UUID) (*wallet.W
 func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := h.Pool.Ping(ctx); err != nil {
-		writeErr(w, http.StatusServiceUnavailable, "database unavailable")
+		writeErr(w, http.StatusServiceUnavailable, CodeServiceUnavailable, "database unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
@@ -139,15 +139,15 @@ type registerBody struct {
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var body registerBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 	if len(body.Password) < 12 {
-		writeErr(w, http.StatusBadRequest, "password must be at least 12 characters")
+		writeErr(w, http.StatusBadRequest, CodeAuthWeakPassword, "password must be at least 12 characters")
 		return
 	}
 	if !body.ConsentGiven {
-		writeErr(w, http.StatusBadRequest, "NDPR consent is required")
+		writeErr(w, http.StatusBadRequest, CodeAuthConsentRequired, "NDPR consent is required")
 		return
 	}
 
@@ -159,12 +159,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrEmailTaken):
-			writeErr(w, http.StatusConflict, "email already registered")
+			writeErr(w, http.StatusConflict, CodeUserEmailTaken, "email already registered")
 		case errors.Is(err, user.ErrConsentRequired):
-			writeErr(w, http.StatusBadRequest, "consent is required")
+			writeErr(w, http.StatusBadRequest, CodeAuthConsentRequired, "consent is required")
 		default:
 			h.Logger.Error("register", "err", err)
-			writeErr(w, http.StatusInternalServerError, "registration failed")
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "registration failed")
 		}
 		return
 	}
@@ -189,22 +189,22 @@ type verifyBody struct {
 func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	var body verifyBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 	if body.Purpose != "email_verify" && body.Purpose != "phone_verify" {
-		writeErr(w, http.StatusBadRequest, "invalid purpose")
+		writeErr(w, http.StatusBadRequest, CodeVerifyInvalidPurpose, "invalid purpose")
 		return
 	}
 
 	u, err := h.Users.VerifyToken(r.Context(), body.Token, body.Purpose, httpx.RealIPFrom(r.Context()), r.UserAgent())
 	if err != nil {
 		if errors.Is(err, user.ErrTokenInvalid) {
-			writeErr(w, http.StatusBadRequest, "token invalid or expired")
+			writeErr(w, http.StatusBadRequest, CodeVerifyTokenInvalid, "token invalid or expired")
 			return
 		}
 		h.Logger.Error("verify", "err", err)
-		writeErr(w, http.StatusInternalServerError, "verification failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "verification failed")
 		return
 	}
 
@@ -222,7 +222,7 @@ type loginBody struct {
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var body loginBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 
@@ -230,11 +230,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrAccountLocked):
-			writeErr(w, http.StatusTooManyRequests, "account temporarily locked")
+			writeErr(w, http.StatusTooManyRequests, CodeAuthAccountLocked, "account temporarily locked")
 		case errors.Is(err, user.ErrAccountNotActive):
-			writeErr(w, http.StatusForbidden, "verify your email and phone before logging in")
+			writeErr(w, http.StatusForbidden, CodeAuthNotActive, "verify your email and phone before logging in")
 		default:
-			writeErr(w, http.StatusUnauthorized, "invalid credentials")
+			writeErr(w, http.StatusUnauthorized, CodeAuthInvalidCredentials, "invalid credentials")
 		}
 		return
 	}
@@ -253,7 +253,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.Logger.Error("sign token", "err", err)
-		writeErr(w, http.StatusInternalServerError, "login failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "login failed")
 		return
 	}
 
@@ -261,7 +261,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		httpx.RealIPFrom(r.Context()), r.UserAgent())
 	if err != nil {
 		h.Logger.Error("issue refresh", "err", err)
-		writeErr(w, http.StatusInternalServerError, "login failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "login failed")
 		return
 	}
 
@@ -281,19 +281,19 @@ type refreshBody struct {
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var body refreshBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 
 	userID, newRefresh, err := h.Users.RotateRefreshToken(r.Context(), body.RefreshToken)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid refresh token")
+		writeErr(w, http.StatusUnauthorized, CodeAuthRefreshInvalid, "invalid refresh token")
 		return
 	}
 
 	u, err := h.Users.GetByID(r.Context(), userID)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "user not found")
+		writeErr(w, http.StatusUnauthorized, CodeUserNotFound, "user not found")
 		return
 	}
 
@@ -310,7 +310,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		AMR:     []string{"pwd"},
 	})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "token issuance failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "token issuance failed")
 		return
 	}
 
@@ -325,7 +325,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	var body refreshBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 	_ = h.Users.RevokeRefreshToken(r.Context(), body.RefreshToken)
@@ -339,7 +339,7 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID, _ := uuid.Parse(claims.Subject)
 	u, err := h.Users.GetByID(r.Context(), userID)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "user not found")
+		writeErr(w, http.StatusNotFound, CodeUserNotFound, "user not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -357,18 +357,18 @@ func (h *Handler) CreateWallet(w http.ResponseWriter, r *http.Request) {
 
 	var body createWalletBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 	if _, ok := money.Decimals(money.Currency(body.Currency)); !ok {
-		writeErr(w, http.StatusBadRequest, "unsupported currency")
+		writeErr(w, http.StatusBadRequest, CodeWalletCurrencyInvalid, "unsupported currency")
 		return
 	}
 
 	wlt, err := h.Wallets.Create(r.Context(), h.Pool, userID, body.Currency)
 	if err != nil {
 		h.Logger.Error("create wallet", "err", err)
-		writeErr(w, http.StatusInternalServerError, "could not create wallet")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "could not create wallet")
 		return
 	}
 	writeJSON(w, http.StatusCreated, wlt)
@@ -379,7 +379,7 @@ func (h *Handler) ListWallets(w http.ResponseWriter, r *http.Request) {
 	userID, _ := uuid.Parse(claims.Subject)
 	ws, err := h.Wallets.ListByUser(r.Context(), h.Pool, userID)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "list failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "list failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, ws)
@@ -388,18 +388,18 @@ func (h *Handler) ListWallets(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetWallet(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid wallet id")
+		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid wallet id")
 		return
 	}
 	wlt, err := h.ownerCheck(r.Context(), id)
 	if err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrNotFound):
-			writeErr(w, http.StatusNotFound, "wallet not found")
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "wallet not found")
 		case errors.Is(err, errForbidden):
-			writeErr(w, http.StatusForbidden, "forbidden")
+			writeErr(w, http.StatusForbidden, CodeForbidden, "forbidden")
 		default:
-			writeErr(w, http.StatusForbidden, "forbidden")
+			writeErr(w, http.StatusForbidden, CodeForbidden, "forbidden")
 		}
 		return
 	}
@@ -409,15 +409,15 @@ func (h *Handler) GetWallet(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetWalletHistory(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid wallet id")
+		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid wallet id")
 		return
 	}
 	if _, err := h.ownerCheck(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrNotFound):
-			writeErr(w, http.StatusNotFound, "wallet not found")
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "wallet not found")
 		default:
-			writeErr(w, http.StatusForbidden, "forbidden")
+			writeErr(w, http.StatusForbidden, CodeForbidden, "forbidden")
 		}
 		return
 	}
@@ -427,7 +427,7 @@ func (h *Handler) GetWalletHistory(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := h.Ledger.History(r.Context(), h.Pool, id, limit, offset)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "history failed")
+		writeErr(w, http.StatusInternalServerError, CodeInternalError, "history failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
@@ -450,37 +450,37 @@ func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
 
 	idemKey := r.Header.Get("Idempotency-Key")
 	if idemKey == "" {
-		writeErr(w, http.StatusBadRequest, "Idempotency-Key header required")
+		writeErr(w, http.StatusBadRequest, CodePaymentIdempotencyKey, "Idempotency-Key header required")
 		return
 	}
 
 	var body transferBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json")
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
 		return
 	}
 	fromID, err := uuid.Parse(body.FromWalletID)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid from_wallet_id")
+		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid from_wallet_id")
 		return
 	}
 	toID, err := uuid.Parse(body.ToWalletID)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid to_wallet_id")
+		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid to_wallet_id")
 		return
 	}
 	amount, err := money.ParseMajor(body.Amount, money.Currency(body.Currency))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, err.Error())
 		return
 	}
 
 	if _, err := h.ownerCheck(r.Context(), fromID); err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrNotFound):
-			writeErr(w, http.StatusNotFound, "source wallet not found")
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "source wallet not found")
 		default:
-			writeErr(w, http.StatusForbidden, "forbidden")
+			writeErr(w, http.StatusForbidden, CodeForbidden, "forbidden")
 		}
 		return
 	}
@@ -496,26 +496,26 @@ func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, wallet.ErrInsufficientFunds):
-			writeErr(w, http.StatusUnprocessableEntity, "insufficient funds")
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferInsufficient, "insufficient funds")
 		case errors.Is(err, wallet.ErrFrozen):
-			writeErr(w, http.StatusUnprocessableEntity, "wallet frozen")
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferWalletFrozen, "wallet frozen")
 		case errors.Is(err, wallet.ErrCurrencyMismatch):
-			writeErr(w, http.StatusUnprocessableEntity, "currency mismatch")
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferCurrencyMismatch, "currency mismatch")
 		case errors.Is(err, wallet.ErrNotFound):
-			writeErr(w, http.StatusNotFound, "wallet not found")
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "wallet not found")
 		case errors.Is(err, wallet.ErrStaleVersion):
-			writeErr(w, http.StatusConflict, "concurrent modification, retry")
+			writeErr(w, http.StatusConflict, CodeTransferConflict, "concurrent modification, retry")
 		case errors.Is(err, payment.ErrLimitExceeded):
-			writeErr(w, http.StatusUnprocessableEntity, err.Error())
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferLimitExceeded, err.Error())
 		case errors.Is(err, fraud.ErrBlocked):
-			writeErr(w, http.StatusUnprocessableEntity, "transaction blocked by fraud checks")
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferBlocked, "transaction blocked by fraud checks")
 		case errors.Is(err, fraud.ErrReview):
-			writeErr(w, http.StatusAccepted, "transaction under review")
+			writeErr(w, http.StatusAccepted, CodeTransferReview, "transaction under review")
 
 		default:
 			h.Logger.Error("transfer", "err", err,
 				"request_id", httpx.RequestIDFrom(r.Context()))
-			writeErr(w, http.StatusInternalServerError, "transfer failed")
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "transfer failed")
 		}
 		return
 	}
