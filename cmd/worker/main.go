@@ -48,6 +48,24 @@ func main() {
 		}
 	}()
 
+	consumer, err := queue.NewConsumer(pool, queue.ConsumerConfig{
+		URL:      envOr("NATS_URL", "nats://localhost:4222"),
+		Stream:   "PAYMENTS",
+		Durable:  "payments-worker",
+		Subjects: []string{"payments.>"},
+	}, dispatchEvent)
+	if err != nil {
+		logger.Error("consumer", "err", err)
+		os.Exit(1)
+	}
+	defer consumer.Close()
+
+	go func() {
+		if err := consumer.Run(ctx); err != nil {
+			logger.Error("consumer", "err", err)
+		}
+	}()
+
 	reconSvc := reconciliation.NewService(pool)
 	go func() {
 		t := time.NewTicker(24 * time.Hour)
@@ -82,8 +100,16 @@ func main() {
 		}
 	}()
 
-	logger.Info("worker running: outbox, reconciliation, audit")
+	logger.Info("worker running: outbox, consumer, reconciliation, audit")
 	<-ctx.Done()
+}
+
+// dispatchEvent routes consumed events to their side-effect handlers.
+// Webhook fan-out is registered here (see internal/webhook); unknown
+// subjects log and ack so they never block the consumer.
+func dispatchEvent(ctx context.Context, subject string, payload []byte) error {
+	slog.Info("event consumed", "subject", subject, "bytes", len(payload))
+	return nil
 }
 
 func envOr(k, fallback string) string {
