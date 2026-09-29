@@ -191,6 +191,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, user.ErrEmailTaken):
 			writeErr(w, http.StatusConflict, CodeUserEmailTaken, "email already registered")
+		case errors.Is(err, user.ErrSanctioned):
+			writeErr(w, http.StatusForbidden, CodeUserSanctioned, "registration blocked")
 		case errors.Is(err, user.ErrConsentRequired):
 			writeErr(w, http.StatusBadRequest, CodeAuthConsentRequired, "consent is required")
 		default:

@@ -28,6 +28,7 @@ var (
 	ErrAccountNotActive   = errors.New("user: account is not active")
 	ErrTokenInvalid       = errors.New("user: token invalid or expired")
 	ErrConsentRequired    = errors.New("user: NDPR consent required")
+	ErrSanctioned         = errors.New("user: registration blocked by sanctions screening")
 )
 
 type Status string
@@ -87,6 +88,25 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*User, error)
 	if len(in.Password) > 72 {
 		return nil, fmt.Errorf("user: password exceeds 72 bytes")
 	}
+
+	// Sanctions screening BEFORE any row is created. Exact CITEXT match
+	// against the consolidated feed table; the feed job owns fuzzy
+	// alias expansion. A hit blocks registration and is audited.
+	var sanctionSource string
+	err := s.pool.QueryRow(ctx,
+		`SELECT source FROM sanctioned_names WHERE name = $1 LIMIT 1`,
+		in.FullName).Scan(&sanctionSource)
+	if err == nil {
+		s.auditDenied(ctx, in.Email, "user.registration_blocked",
+			"sanctions_hit:"+sanctionSource, in.IP, in.UserAgent)
+		return nil, ErrSanctioned
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// Screening store down: fail CLOSED. Onboarding can retry;
+		// admitting an unscreened user cannot be undone.
+		return nil, fmt.Errorf("user: sanctions screening unavailable: %w", err)
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.bcryptCost)
 	if err != nil {
 		return nil, fmt.Errorf("user: hash password: %w", err)
@@ -328,6 +348,33 @@ func (s *Service) Authenticate(ctx context.Context,
 		WHERE id = $1`, u.ID)
 
 	return &u, nil
+}
+
+// auditDenied writes an audit row for a rejected pre-auth action
+// (blocked registration, etc.) on a fresh transaction. Never fails the
+// caller's rejection.
+func (s *Service) auditDenied(ctx context.Context,
+	attemptedEmail, action, reason, ip, userAgent string) {
+
+	err := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		return s.audit.Record(ctx, tx, audit.Event{
+			ActorID:    uuid.Nil,
+			ActorType:  "anonymous",
+			Action:     action,
+			EntityType: "user",
+			EntityID:   uuid.Nil,
+			Metadata: map[string]any{
+				"email":  attemptedEmail,
+				"reason": reason,
+			},
+			IP:        parseIP(ip),
+			UserAgent: userAgent,
+		})
+	})
+	if err != nil {
+		slog.Error("failed to write denial audit",
+			"err", err, "action", action, "reason", reason)
+	}
 }
 
 // auditLoginFailure writes an audit row for a rejected login attempt.
