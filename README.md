@@ -344,6 +344,14 @@ A user who registers but never verifies their email should not be able to move m
 
 The encryption key is loaded from `ENCRYPTION_KEY_B64` (base64, 32 bytes). It must come from a secrets manager (AWS KMS, Vault, Kubernetes Secret). Never commit it.
 
+### Key rotation
+
+`ENCRYPTION_KEYS="k2:<b64>,k1:<b64>"` (first entry is active) replaces
+the single-key variable. Ciphertext carries its key id (`PAYENC1:` envelope),
+so rotation is: deploy with the new key appended (old stays active),
+flip the order so the new key is first, then retire the old key once
+re-encryption is confirmed. Pre-envelope rows decrypt via key trial.
+
 Per PCI DSS 4.0.1 Requirement 3.5.1.2, disk-level encryption alone does not satisfy the requirement — application-layer encryption is mandatory for sensitive financial identifiers. AES-256-GCM is an AEAD cipher: it authenticates before decrypting, so any ciphertext tampering causes `Decrypt` to fail rather than returning corrupted plaintext.
 
 ### Authentication

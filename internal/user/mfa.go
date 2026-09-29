@@ -15,7 +15,7 @@ import (
 
 // SetEncryptor wires the PII/TOTP encryptor. MFA enrollment and phone
 // encryption fail closed when it is nil.
-func (s *Service) SetEncryptor(enc *crypto.Encryptor) { s.enc = enc }
+func (s *Service) SetEncryptor(enc *crypto.KeyRing) { s.enc = enc }
 
 // BeginMFA generates a TOTP secret, stores it encrypted (resetting any
 // prior verification), and returns the plaintext secret plus the

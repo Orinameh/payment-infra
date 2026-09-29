@@ -92,17 +92,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ── Encryption key (PII at rest) ──────────────────────────────
-	encKey, err := crypto.KeyFromBase64(os.Getenv("ENCRYPTION_KEY_B64"))
+	// ── Encryption keyring (PII at rest) ──────────────────────────
+	// Versioned: ENCRYPTION_KEYS="id:b64,..." (first is active) with
+	// fallback to legacy ENCRYPTION_KEY_B64. Rotation never orphans
+	// rows — envelopes carry their key id.
+	enc, err := crypto.NewKeyRingFromEnv()
 	if err != nil {
-		logger.Error("encryption key", "err", err)
+		logger.Error("encryption keyring", "err", err)
 		os.Exit(1)
 	}
-	enc, err := crypto.NewEncryptor(encKey)
-	if err != nil {
-		logger.Error("encryption key", "err", err)
-		os.Exit(1)
-	}
+	logger.Info("encryption keyring ready", "active", enc.ActiveID())
 
 	// ── Services ──────────────────────────────────────────────────
 	auditRec := &audit.Recorder{}

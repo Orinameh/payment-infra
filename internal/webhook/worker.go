@@ -76,14 +76,14 @@ func Backoff(attempt int) time.Duration {
 
 type Worker struct {
 	pool     *pgxpool.Pool
-	enc      *crypto.Encryptor
+	enc      *crypto.KeyRing
 	client   *http.Client
 	batch    int
 	interval time.Duration
 	failOpen int // consecutive failures before opening an endpoint circuit
 }
 
-func NewWorker(pool *pgxpool.Pool, enc *crypto.Encryptor) *Worker {
+func NewWorker(pool *pgxpool.Pool, enc *crypto.KeyRing) *Worker {
 	return &Worker{
 		pool: pool, enc: enc,
 		client:   &http.Client{Timeout: 10 * time.Second},

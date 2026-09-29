@@ -66,7 +66,7 @@ type Service struct {
 	bcryptCost int
 	// enc encrypts TOTP secrets (and PII) at rest. Wired via
 	// SetEncryptor; MFA enrollment fails closed when nil.
-	enc *crypto.Encryptor
+	enc *crypto.KeyRing
 	// dummyHash is a real bcrypt hash (60 chars, valid salt, valid
 	// digest). Comparing a password against it takes the same ~250ms
 	// as a real comparison, so login response time does not reveal

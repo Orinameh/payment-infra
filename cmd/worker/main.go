@@ -71,16 +71,11 @@ func main() {
 		}
 	}()
 
-	// Webhook delivery needs the PII encryption key to decrypt endpoint
-	// HMAC secrets.
-	encKey, err := crypto.KeyFromBase64(os.Getenv("ENCRYPTION_KEY_B64"))
+	// Webhook delivery needs the keyring to decrypt endpoint HMAC
+	// secrets (any generation, via envelope key ids).
+	enc, err := crypto.NewKeyRingFromEnv()
 	if err != nil {
-		logger.Error("encryption key", "err", err)
-		os.Exit(1)
-	}
-	enc, err := crypto.NewEncryptor(encKey)
-	if err != nil {
-		logger.Error("encryption key", "err", err)
+		logger.Error("encryption keyring", "err", err)
 		os.Exit(1)
 	}
 	go func() {
