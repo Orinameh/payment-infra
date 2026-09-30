@@ -74,12 +74,12 @@ func main() {
 
 	// Webhook delivery needs the keyring to decrypt endpoint HMAC
 	// secrets (any generation, via envelope key ids).
-	enc, keySource, err := crypto.NewKeyRingFromEnv()
+	enc, err := crypto.NewKeyRingFromEnv()
 	if err != nil {
 		logger.Error("encryption keyring", "err", err)
 		os.Exit(1)
 	}
-	logger.Info("encryption keyring ready", "active", enc.ActiveID(), "source", keySource)
+	logger.Info("encryption keyring ready", "active", enc.ActiveID())
 	go func() {
 		if err := webhook.NewWorker(pool, enc).Run(ctx); err != nil {
 			logger.Error("webhook", "err", err)

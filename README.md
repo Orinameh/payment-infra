@@ -341,9 +341,7 @@ A user who registers but never verifies their email should not be able to move m
 
 The encryption keyring is loaded from `ENCRYPTION_KEYS` (`"k1:<base64>"`;
 first entry is active) and must come from a secrets manager (AWS KMS,
-Vault, Kubernetes Secret). Never commit it. The single-key
-`ENCRYPTION_KEY_B64` is accepted only as a deprecated fallback for
-pre-rotation deployments — new setups must not use it.
+Vault, Kubernetes Secret). Never commit it.
 
 ### Key rotation
 

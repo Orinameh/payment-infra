@@ -93,15 +93,14 @@ func main() {
 	}
 
 	// ── Encryption keyring (PII at rest) ──────────────────────────
-	// Canonical variable is ENCRYPTION_KEYS="id:b64,..." (first is
-	// active); ENCRYPTION_KEY_B64 is a deprecated fallback. Rotation
-	// never orphans rows — envelopes carry their key id.
-	enc, keySource, err := crypto.NewKeyRingFromEnv()
+	// Sole variable: ENCRYPTION_KEYS="id:b64,..." (first is active).
+	// Rotation never orphans rows — envelopes carry their key id.
+	enc, err := crypto.NewKeyRingFromEnv()
 	if err != nil {
 		logger.Error("encryption keyring", "err", err)
 		os.Exit(1)
 	}
-	logger.Info("encryption keyring ready", "active", enc.ActiveID(), "source", keySource)
+	logger.Info("encryption keyring ready", "active", enc.ActiveID())
 
 	// ── Services ──────────────────────────────────────────────────
 	auditRec := &audit.Recorder{}
