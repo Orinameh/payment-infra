@@ -9,7 +9,10 @@ import (
 func TestRateLimiterBurstAndIsolation(t *testing.T) {
 	rl := NewRateLimiter(0.001, 2) // ~never refills within the test
 	if !rl.Allow("a") {
-		t.Fatal("burst of 2 must allow two")
+		t.Fatal("first request must be allowed")
+	}
+	if !rl.Allow("a") {
+		t.Fatal("burst of 2 must allow a second immediate request")
 	}
 	if rl.Allow("a") {
 		t.Fatal("third immediate request must be denied")
