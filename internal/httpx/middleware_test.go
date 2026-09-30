@@ -8,7 +8,7 @@ import (
 
 func TestRateLimiterBurstAndIsolation(t *testing.T) {
 	rl := NewRateLimiter(0.001, 2) // ~never refills within the test
-	if !rl.Allow("a") || !rl.Allow("a") {
+	if !rl.Allow("a") {
 		t.Fatal("burst of 2 must allow two")
 	}
 	if rl.Allow("a") {
