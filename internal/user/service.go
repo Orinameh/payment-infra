@@ -11,6 +11,7 @@ import (
 	"payment-infra/internal/audit"
 	"payment-infra/internal/auth"
 	"payment-infra/internal/crypto"
+	"payment-infra/internal/httpx"
 	"payment-infra/internal/platform/db"
 	"strings"
 	"time"
@@ -164,6 +165,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*User, error)
 			EntityID:   u.ID,
 			Metadata:   map[string]any{"email": u.Email, "status": string(u.Status)},
 			UserAgent:  in.UserAgent,
+			RequestID:  httpx.RequestIDFrom(ctx),
 		})
 	})
 	if err != nil {
@@ -278,6 +280,7 @@ func (s *Service) VerifyToken(ctx context.Context,
 			},
 			IP:        parseIP(ip),
 			UserAgent: userAgent,
+			RequestID: httpx.RequestIDFrom(ctx),
 		}); err != nil {
 			return err
 		}
@@ -298,6 +301,7 @@ func (s *Service) VerifyToken(ctx context.Context,
 				},
 				IP:        parseIP(ip),
 				UserAgent: userAgent,
+				RequestID: httpx.RequestIDFrom(ctx),
 			})
 		}
 		return nil
@@ -399,6 +403,7 @@ func (s *Service) auditDenied(ctx context.Context,
 			},
 			IP:        parseIP(ip),
 			UserAgent: userAgent,
+			RequestID: httpx.RequestIDFrom(ctx),
 		})
 	})
 	if err != nil {
@@ -438,6 +443,7 @@ func (s *Service) auditLoginFailure(ctx context.Context,
 			},
 			IP:        parseIP(ip),
 			UserAgent: userAgent,
+			RequestID: httpx.RequestIDFrom(ctx),
 		})
 	})
 	if err != nil {

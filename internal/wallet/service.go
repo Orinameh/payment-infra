@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"payment-infra/internal/audit"
 	"payment-infra/internal/cache"
+	"payment-infra/internal/httpx"
 	"payment-infra/internal/money"
 	"payment-infra/internal/platform/db"
 	"sort"
@@ -225,6 +226,7 @@ func (s *Service) Debit(ctx context.Context, tx pgx.Tx,
 		if err := s.audit.Record(ctx, tx, audit.Event{
 			ActorID: actorID, ActorType: "user",
 			Action: "wallet.debit", EntityType: "wallet", EntityID: id,
+			RequestID: httpx.RequestIDFrom(ctx),
 			Metadata: map[string]any{
 				"amount_minor":  amount.Minor,
 				"currency":      w.Currency,
@@ -268,6 +270,7 @@ func (s *Service) Credit(ctx context.Context, tx pgx.Tx,
 		if err := s.audit.Record(ctx, tx, audit.Event{
 			ActorID: actorID, ActorType: "user",
 			Action: "wallet.credit", EntityType: "wallet", EntityID: id,
+			RequestID: httpx.RequestIDFrom(ctx),
 			Metadata: map[string]any{
 				"amount_minor":  amount.Minor,
 				"currency":      w.Currency,
@@ -366,6 +369,7 @@ func (s *Service) Transfer(ctx context.Context, tx pgx.Tx,
 		if err := s.audit.Record(ctx, tx, audit.Event{
 			ActorID: actorID, ActorType: "user",
 			Action: "wallet.transfer", EntityType: "wallet", EntityID: fromID,
+			RequestID: httpx.RequestIDFrom(ctx),
 			Metadata: map[string]any{
 				"from":          fromID.String(),
 				"to":            toID.String(),

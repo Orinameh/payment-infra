@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"payment-infra/internal/audit"
+	"payment-infra/internal/httpx"
 	"payment-infra/internal/platform/db"
 
 	"github.com/google/uuid"
@@ -167,6 +168,7 @@ func (s *Service) Erase(ctx context.Context, userID uuid.UUID) error {
 			EntityType: "user",
 			EntityID:   userID,
 			Metadata:   map[string]any{"retained": []string{"ledger", "transactions", "aml_alerts", "audit_log"}},
+			RequestID:  httpx.RequestIDFrom(ctx),
 		})
 	})
 	if err != nil {

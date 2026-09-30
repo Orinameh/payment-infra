@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"payment-infra/internal/audit"
 	"payment-infra/internal/fraud"
+	"payment-infra/internal/httpx"
 	"payment-infra/internal/ledger"
 	"payment-infra/internal/money"
 	"payment-infra/internal/nibss"
@@ -189,6 +190,9 @@ func (s *Service) Transfer(ctx context.Context, actorID uuid.UUID,
 				"reference":      req.Reference,
 				"end_to_end_id":  req.EndToEndID,
 				"new_balance":    from.Balance,
+				// Correlation: lets the consumer, webhook deliveries,
+				// and audit trail all join back to the HTTP request.
+				"request_id": httpx.RequestIDFrom(ctx),
 			}); err != nil {
 			return err
 		}

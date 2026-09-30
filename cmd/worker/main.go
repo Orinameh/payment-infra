@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -152,11 +153,26 @@ func dispatchEvent(ctx context.Context, q db.Querier, subject string, payload []
 		if err := webhook.EnqueueForEvent(ctx, q, subject, payload); err != nil {
 			return err
 		}
+		slog.Info("transfer fanned out to webhooks",
+			"subject", subject, "request_id", requestIDOf(payload))
 		return nil
 	default:
-		slog.Info("event consumed (no handler)", "subject", subject, "bytes", len(payload))
+		slog.Info("event consumed (no handler)",
+			"subject", subject, "bytes", len(payload),
+			"request_id", requestIDOf(payload))
 		return nil
 	}
+}
+
+// requestIDOf extracts the correlating request id from an event payload.
+// Best-effort: events predating propagation simply log empty.
+func requestIDOf(payload []byte) string {
+	var doc map[string]any
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		return ""
+	}
+	id, _ := doc["request_id"].(string)
+	return id
 }
 
 func envOr(k, fallback string) string {
