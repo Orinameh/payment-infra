@@ -13,12 +13,13 @@ import (
 // fields the read path needs (balance display + ownership check).
 // Ownership (user_id) is immutable, so serving it from cache is safe.
 type CachedWallet struct {
-	ID       uuid.UUID `json:"id"`
-	UserID   uuid.UUID `json:"user_id"`
-	Currency string    `json:"currency"`
-	Balance  int64     `json:"balance_minor"`
-	Version  int64     `json:"version"`
-	Status   string    `json:"status"`
+	ID            uuid.UUID `json:"id"`
+	UserID        uuid.UUID `json:"user_id"`
+	Currency      string    `json:"currency"`
+	Balance       int64     `json:"balance_minor"`
+	Version       int64     `json:"version"`
+	Status        string    `json:"status"`
+	AccountNumber *string   `json:"account_number,omitempty"`
 }
 
 func walletKey(id uuid.UUID) string { return "wallet:" + id.String() }

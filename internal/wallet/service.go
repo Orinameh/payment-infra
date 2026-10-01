@@ -8,6 +8,7 @@ import (
 	"payment-infra/internal/cache"
 	"payment-infra/internal/httpx"
 	"payment-infra/internal/money"
+	"payment-infra/internal/nuban"
 	"payment-infra/internal/platform/db"
 	"sort"
 	"time"
@@ -25,22 +26,31 @@ var (
 )
 
 type Wallet struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Currency  string    `json:"currency"`
-	Balance   int64     `json:"balance_minor"`
-	Version   int64     `json:"version"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID       uuid.UUID `json:"id"`
+	UserID   uuid.UUID `json:"user_id"`
+	Currency string    `json:"currency"`
+	Balance  int64     `json:"balance_minor"`
+	Version  int64     `json:"version"`
+	Status   string    `json:"status"`
+	// AccountNumber is the wallet's virtual NUBAN (nullable for rows
+	// created before numbering; the backfill closes that gap).
+	AccountNumber *string   `json:"account_number,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Service struct {
 	audit *audit.Recorder
 	cache *cache.WalletCache
+	// bankCode roots generated NUBANs (our CBN institution code).
+	// Empty disables numbering (tests, numbering-free deploys).
+	bankCode string
 }
 
 func NewService(a *audit.Recorder) *Service { return &Service{audit: a} }
+
+// SetBankCode enables virtual-NUBAN assignment on Create and backfill.
+func (s *Service) SetBankCode(code string) { s.bankCode = code }
 
 // SetCache enables the Redis cache-aside read path. Nil (default)
 // means every read hits PostgreSQL. The cache is best-effort:
@@ -54,6 +64,21 @@ func (s *Service) invalidate(ctx context.Context, ids ...uuid.UUID) {
 	}
 }
 
+// GetByAccountNumber resolves a virtual NUBAN to its wallet. Used by
+// name enquiry and inbound matching.
+func (s *Service) GetByAccountNumber(ctx context.Context, q db.Querier, accountNumber string) (*Wallet, error) {
+	var w Wallet
+	err := q.QueryRow(ctx, `
+		SELECT id, user_id, currency, balance, version, status, account_number, created_at, updated_at
+		FROM wallets WHERE account_number = $1`, accountNumber,
+	).Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version, &w.Status,
+		&w.AccountNumber, &w.CreatedAt, &w.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &w, err
+}
+
 // GetCached serves balance reads from Redis when possible, falling
 // back to PostgreSQL on a miss. Use for display/read endpoints only —
 // transactional code (Debit/Credit/Transfer) must use lock + Get so it
@@ -64,6 +89,7 @@ func (s *Service) GetCached(ctx context.Context, q db.Querier, id uuid.UUID) (*W
 			return &Wallet{
 				ID: cw.ID, UserID: cw.UserID, Currency: cw.Currency,
 				Balance: cw.Balance, Version: cw.Version, Status: cw.Status,
+				AccountNumber: cw.AccountNumber,
 			}, nil
 		}
 	}
@@ -75,31 +101,112 @@ func (s *Service) GetCached(ctx context.Context, q db.Querier, id uuid.UUID) (*W
 		s.cache.SetWallet(ctx, &cache.CachedWallet{
 			ID: w.ID, UserID: w.UserID, Currency: w.Currency,
 			Balance: w.Balance, Version: w.Version, Status: w.Status,
+			AccountNumber: w.AccountNumber,
 		})
 	}
 	return w, nil
 }
 
 func (s *Service) Create(ctx context.Context, q db.Querier, userID uuid.UUID, currency string) (*Wallet, error) {
-	var w Wallet
-	err := q.QueryRow(ctx, `
-		INSERT INTO wallets (user_id, currency)
-		VALUES ($1, $2)
-		ON CONFLICT (user_id, currency) DO UPDATE SET updated_at = wallets.updated_at
-		RETURNING id, user_id, currency, balance, version, status, created_at, updated_at`,
-		userID, currency,
-	).Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version, &w.Status,
-		&w.CreatedAt, &w.UpdatedAt)
-	return &w, err
+	// Numbered wallets retry generation on the (negligible but
+	// possible) account_number collision. The (user_id, currency)
+	// conflict is absorbed by ON CONFLICT and returns the existing row.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		var acct *string
+		if s.bankCode != "" {
+			n, err := nuban.Generate(s.bankCode)
+			if err != nil {
+				return nil, err
+			}
+			acct = &n
+		}
+		var w Wallet
+		err := q.QueryRow(ctx, `
+			INSERT INTO wallets (user_id, currency, account_number)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (user_id, currency) DO UPDATE SET updated_at = wallets.updated_at
+			RETURNING id, user_id, currency, balance, version, status, account_number, created_at, updated_at`,
+			userID, currency, acct,
+		).Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version, &w.Status,
+			&w.AccountNumber, &w.CreatedAt, &w.UpdatedAt)
+		if err == nil {
+			return &w, nil
+		}
+		// Only an account_number collision is retryable here; the
+		// currency conflict never errors (ON CONFLICT absorbs it).
+		if acct != nil && db.IsUniqueViolation(err) {
+			lastErr = err
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("wallet: account number collisions: %w", lastErr)
+}
+
+// BackfillAccountNumbers assigns NUBANs to pre-numbering wallets in
+// small batches. Idempotent and safe to run hourly; returns the count
+// assigned this call (0 when caught up). No-op without a bank code.
+func (s *Service) BackfillAccountNumbers(ctx context.Context, q db.Querier, batch int) (int, error) {
+	if s.bankCode == "" {
+		return 0, nil
+	}
+	if batch <= 0 || batch > 100 {
+		batch = 20
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id FROM wallets
+		WHERE account_number IS NULL
+		ORDER BY created_at LIMIT $1`, batch)
+	if err != nil {
+		return 0, err
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	assigned := 0
+	for _, id := range ids {
+		for attempt := 0; attempt < 5; attempt++ {
+			n, err := nuban.Generate(s.bankCode)
+			if err != nil {
+				return assigned, err
+			}
+			tag, err := q.Exec(ctx, `
+				UPDATE wallets SET account_number = $1, updated_at = now()
+				WHERE id = $2 AND account_number IS NULL`, n, id)
+			if err != nil {
+				if db.IsUniqueViolation(err) {
+					continue
+				}
+				return assigned, err
+			}
+			if tag.RowsAffected() == 1 {
+				assigned++
+				s.invalidate(ctx, id)
+			}
+			break
+		}
+	}
+	return assigned, nil
 }
 
 func (s *Service) Get(ctx context.Context, q db.Querier, id uuid.UUID) (*Wallet, error) {
 	var w Wallet
 	err := q.QueryRow(ctx, `
-		SELECT id, user_id, currency, balance, version, status, created_at, updated_at
+		SELECT id, user_id, currency, balance, version, status, account_number, created_at, updated_at
 		FROM wallets WHERE id = $1`, id,
 	).Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version, &w.Status,
-		&w.CreatedAt, &w.UpdatedAt)
+		&w.AccountNumber, &w.CreatedAt, &w.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -108,7 +215,7 @@ func (s *Service) Get(ctx context.Context, q db.Querier, id uuid.UUID) (*Wallet,
 
 func (s *Service) ListByUser(ctx context.Context, q db.Querier, userID uuid.UUID) ([]Wallet, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, user_id, currency, balance, version, status, created_at, updated_at
+		SELECT id, user_id, currency, balance, version, status, account_number, created_at, updated_at
 		FROM wallets WHERE user_id = $1 ORDER BY currency`, userID)
 	if err != nil {
 		return nil, err
@@ -119,7 +226,7 @@ func (s *Service) ListByUser(ctx context.Context, q db.Querier, userID uuid.UUID
 	for rows.Next() {
 		var w Wallet
 		if err := rows.Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version,
-			&w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			&w.Status, &w.AccountNumber, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -134,10 +241,10 @@ func (s *Service) ListByUser(ctx context.Context, q db.Querier, userID uuid.UUID
 func (s *Service) lock(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*Wallet, error) {
 	var w Wallet
 	err := tx.QueryRow(ctx, `
-		SELECT id, user_id, currency, balance, version, status, created_at, updated_at
+		SELECT id, user_id, currency, balance, version, status, account_number, created_at, updated_at
 		FROM wallets WHERE id = $1 FOR UPDATE`, id,
 	).Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version, &w.Status,
-		&w.CreatedAt, &w.UpdatedAt)
+		&w.AccountNumber, &w.CreatedAt, &w.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -149,7 +256,7 @@ func (s *Service) lockMany(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].String() < sorted[j].String() })
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, user_id, currency, balance, version, status, created_at, updated_at
+		SELECT id, user_id, currency, balance, version, status, account_number, created_at, updated_at
 		FROM wallets WHERE id = ANY($1) ORDER BY id FOR UPDATE`, sorted)
 	if err != nil {
 		return nil, fmt.Errorf("wallet: lock many: %w", err)
@@ -160,7 +267,7 @@ func (s *Service) lockMany(ctx context.Context, tx pgx.Tx, ids []uuid.UUID) (map
 	for rows.Next() {
 		var w Wallet
 		if err := rows.Scan(&w.ID, &w.UserID, &w.Currency, &w.Balance, &w.Version,
-			&w.Status, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			&w.Status, &w.AccountNumber, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out[w.ID] = &w
