@@ -83,6 +83,8 @@ services:
       JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
       JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
       ENCRYPTION_KEYS: ${ENCRYPTION_KEYS}
+      BANK_CODE: ${BANK_CODE:-999}
+      NIBSS_MODE: ${NIBSS_MODE:-dummy}
     ports: ["8443:8443"]
     volumes:
       - ./deploy/secrets:/run/secrets:ro
@@ -98,6 +100,7 @@ services:
       DATABASE_URL: postgres://payments:${POSTGRES_PASSWORD:-secret}@postgres:5432/payments?sslmode=disable
       NATS_URL: nats://nats:4222
       ENCRYPTION_KEYS: ${ENCRYPTION_KEYS}
+      BANK_CODE: ${BANK_CODE:-999}
     entrypoint: ["/app/worker"]
 
 volumes:

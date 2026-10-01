@@ -14,6 +14,7 @@ import (
 	"payment-infra/internal/reconciliation"
 	"payment-infra/internal/retention"
 	"payment-infra/internal/snapshot"
+	"payment-infra/internal/wallet"
 	"payment-infra/internal/webhook"
 	"syscall"
 	"time"
@@ -88,6 +89,13 @@ func main() {
 	}()
 
 	reconSvc := reconciliation.NewService(pool)
+
+	// NUBAN backfill shares the wallet service (bank code from env).
+	walletSvc := wallet.NewService(&audit.Recorder{})
+	if code := os.Getenv("BANK_CODE"); code != "" {
+		walletSvc.SetBankCode(code)
+	}
+
 	go func() {
 		t := time.NewTicker(24 * time.Hour)
 		defer t.Stop()
@@ -140,6 +148,25 @@ func main() {
 	// Retention never touches money tables — only operational buffers.
 	go retention.NewService(pool).RunLoop(ctx, time.Hour)
 
+	// NUBAN backfill for pre-numbering wallets. Self-terminating:
+	// each run assigns a batch until none remain, then no-ops.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := walletSvc.BackfillAccountNumbers(ctx, pool, 50); err != nil {
+					logger.Error("nuban backfill", "err", err)
+				} else if n > 0 {
+					logger.Info("nuban backfill", "assigned", n)
+				}
+			}
+		}
+	}()
+
 	logger.Info("worker running: outbox, consumer, webhooks, snapshots, retention, reconciliation, audit")
 	<-ctx.Done()
 }
@@ -149,7 +176,7 @@ func main() {
 // subjects log and ack so they never block the consumer.
 func dispatchEvent(ctx context.Context, q db.Querier, subject string, payload []byte) error {
 	switch subject {
-	case "payments.transfer_posted":
+	case "payments.transfer_posted", "payments.bank_transfer_posted":
 		if err := webhook.EnqueueForEvent(ctx, q, subject, payload); err != nil {
 			return err
 		}

@@ -64,6 +64,56 @@ func (s *Service) invalidate(ctx context.Context, ids ...uuid.UUID) {
 	}
 }
 
+// EnsureAccountNumber returns the wallet's NUBAN, assigning one if
+// numbering is enabled and the row predates it. Used on rails (bank
+// transfer) that must present a source account number.
+func (s *Service) EnsureAccountNumber(ctx context.Context, q db.Querier, id uuid.UUID) (string, error) {
+	var acct *string
+	if err := q.QueryRow(ctx,
+		`SELECT account_number FROM wallets WHERE id = $1`, id,
+	).Scan(&acct); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if acct != nil {
+		return *acct, nil
+	}
+	if s.bankCode == "" {
+		return "", fmt.Errorf("wallet: numbering disabled, no account number")
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		n, err := nuban.Generate(s.bankCode)
+		if err != nil {
+			return "", err
+		}
+		tag, err := q.Exec(ctx, `
+			UPDATE wallets SET account_number = $1, updated_at = now()
+			WHERE id = $2 AND account_number IS NULL`, n, id)
+		if err != nil {
+			if db.IsUniqueViolation(err) {
+				continue
+			}
+			return "", err
+		}
+		if tag.RowsAffected() == 1 {
+			s.invalidate(ctx, id)
+			return n, nil
+		}
+		// Someone else numbered it concurrently; read back.
+		if err := q.QueryRow(ctx,
+			`SELECT account_number FROM wallets WHERE id = $1`, id,
+		).Scan(&acct); err != nil {
+			return "", err
+		}
+		if acct != nil {
+			return *acct, nil
+		}
+	}
+	return "", fmt.Errorf("wallet: account number collisions")
+}
+
 // GetByAccountNumber resolves a virtual NUBAN to its wallet. Used by
 // name enquiry and inbound matching.
 func (s *Service) GetByAccountNumber(ctx context.Context, q db.Querier, accountNumber string) (*Wallet, error) {

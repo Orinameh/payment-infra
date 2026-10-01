@@ -133,6 +133,17 @@ func main() {
 	paymentSvc := payment.NewService(pool, walletSvc, ledgerSvc, fraudSvc, auditRec,
 		paymentOpts...)
 
+	// Institution bank code roots virtual NUBANs and routes the bank
+	// rail (local vs NIP). Empty disables numbering; bank transfers
+	// then degrade to provider-unavailable.
+	if code := os.Getenv("BANK_CODE"); code != "" {
+		walletSvc.SetBankCode(code)
+		paymentSvc.SetBankCode(code)
+		logger.Info("bank rail enabled", "bank_code", code)
+	} else {
+		logger.Warn("BANK_CODE unset: wallet numbering and bank transfers disabled")
+	}
+
 	// ── JWT signing ───────────────────────────────────────────────
 	signToken := func(claims auth.Claims) (string, error) {
 		t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

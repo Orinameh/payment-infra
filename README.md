@@ -633,6 +633,21 @@ The API parses `"5000.50"` into `500050` kobo and stores that. The response incl
 |---|---|---|
 | `POST` | `/v1/transfers` | Move funds between wallets |
 
+### Bank rail (NIP)
+
+Every wallet carries a virtual 10-digit NUBAN rooted at `BANK_CODE`
+(dev default `999`). Resolve before paying, then send:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/name-enquiry` | Holder name for account + bank code |
+| `POST` | `/v1/bank-transfers` | Outbound transfer via the NIBSS provider |
+
+Outbound flow is debit user → credit settlement (ledger stays
+balanced), provider call outside DB locks, then finalize posted or
+reverse whole. `NIBSS_MODE=dummy` simulates the switch; `real`
+requires onboarding (institution code, key exchange, NCS).
+
 **Headers for mutating endpoints:**
 
 - `Authorization: Bearer <token>` — required

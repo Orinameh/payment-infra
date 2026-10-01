@@ -53,6 +53,8 @@ type Service struct {
 	audit   *audit.Recorder
 	nibss   nibss.Provider
 	outbox  outbox.Writer
+	// bankCode is our institution code for local-vs-remote routing.
+	bankCode string
 }
 
 type Config struct {

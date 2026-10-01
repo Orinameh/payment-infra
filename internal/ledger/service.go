@@ -25,7 +25,11 @@ type Entry struct {
 }
 
 type PostRequest struct {
-	Type       string
+	Type string
+	// Status defaults to "posted" when empty. Bank transfers post as
+	// "pending" first and flip to posted/failed around the provider
+	// call, so a crash between debit and settlement is recoverable.
+	Status     string
 	Reference  string
 	EndToEndID string
 	Metadata   map[string]any
@@ -67,14 +71,18 @@ func (s *Service) Post(ctx context.Context, tx pgx.Tx, req PostRequest) (uuid.UU
 		meta = map[string]any{}
 	}
 	currency := req.Entries[0].Currency
+	status := req.Status
+	if status == "" {
+		status = "posted"
+	}
 
 	var txID uuid.UUID
 	err := tx.QueryRow(ctx, `
 		INSERT INTO transactions (type, status, reference, end_to_end_id,
 		                          total_minor, currency, metadata, posted_at)
-		VALUES ($1, 'posted', $2, $3, $4, $5, $6, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 		RETURNING id`,
-		req.Type, req.Reference, req.EndToEndID,
+		req.Type, status, req.Reference, req.EndToEndID,
 		absSum(req.Entries)/2,
 		currency, meta,
 	).Scan(&txID)

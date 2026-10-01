@@ -32,6 +32,9 @@ const (
 	CodeTransferLimitExceeded    = "TRANSFER_LIMIT_EXCEEDED"
 	CodeTransferBlocked          = "TRANSFER_BLOCKED_FRAUD"
 	CodeTransferReview           = "TRANSFER_UNDER_REVIEW"
+	CodeBankProviderDown         = "BANK_PROVIDER_UNAVAILABLE"
+	CodeBankInvalidAccount       = "BANK_INVALID_ACCOUNT"
+	CodeBankLocalDestination     = "BANK_LOCAL_DESTINATION"
 	CodeServiceUnavailable       = "SERVICE_UNAVAILABLE"
 	CodeInternalError            = "INTERNAL_ERROR"
 )

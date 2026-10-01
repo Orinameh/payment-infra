@@ -108,6 +108,16 @@ func NewRouter(h *Handler, authn *auth.Authenticator, rl, authRL *httpx.RateLimi
 		httpx.RateLimit(rl),
 	))
 
+	// Outbound bank transfers — same MFA gate (external money movement).
+	mux.Handle("POST /v1/bank-transfers", httpx.Chain(http.HandlerFunc(h.BankTransfer),
+		httpx.AuthRequired(authn),
+		httpx.RequireMFA,
+		httpx.RateLimit(rl),
+	))
+
+	// Name enquiry is read-only PII: authenticated, no step-up required.
+	mux.Handle("POST /v1/name-enquiry", protected(h.NameEnquiry))
+
 	// MFA enrollment (protected; setup before step-up is required)
 	mux.Handle("POST /v1/mfa/setup", protected(h.SetupMFA))
 	mux.Handle("POST /v1/mfa/confirm", protected(h.ConfirmMFA))
@@ -718,6 +728,142 @@ func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"transaction_id":      res.TransactionID,
 		"status":              res.Status,
+		"new_balance_minor":   res.NewBalance,
+		"new_balance_display": money.New(res.NewBalance, money.Currency(res.Currency)).Format(),
+		"currency":            res.Currency,
+	})
+}
+
+// ---- bank rail handlers ----
+
+type enquiryBody struct {
+	AccountNumber string `json:"account_number"`
+	BankCode      string `json:"bank_code"`
+}
+
+// NameEnquiry resolves an account to its holder before money moves.
+// NIP mandates this step; clients should call it and display the name
+// for confirmation before POSTing a bank transfer.
+func (h *Handler) NameEnquiry(w http.ResponseWriter, r *http.Request) {
+	var body enquiryBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
+		return
+	}
+	res, err := h.Payments.NameEnquiry(r.Context(), body.AccountNumber, body.BankCode)
+	if err != nil {
+		switch {
+		case errors.Is(err, payment.ErrInvalidAccount):
+			writeErr(w, http.StatusBadRequest, CodeBankInvalidAccount, err.Error())
+		case errors.Is(err, wallet.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeBankInvalidAccount, "account not found")
+		case errors.Is(err, wallet.ErrFrozen):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferWalletFrozen, "account frozen")
+		case errors.Is(err, payment.ErrProviderUnavailable):
+			writeErr(w, http.StatusServiceUnavailable, CodeBankProviderDown, "bank directory unavailable")
+		default:
+			h.Logger.Error("name enquiry", "err", err)
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "enquiry failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+type bankTransferBody struct {
+	FromWalletID  string `json:"from_wallet_id"`
+	AccountNumber string `json:"account_number"`
+	BankCode      string `json:"bank_code"`
+	Amount        string `json:"amount"`
+	Currency      string `json:"currency"`
+	Reference     string `json:"reference"`
+	EndToEndID    string `json:"end_to_end_id"`
+	Narration     string `json:"narration"`
+}
+
+// BankTransfer sends funds to an external bank account via NIP
+// (simulated by the configured provider). Requires an MFA step-up
+// token, like wallet transfers.
+func (h *Handler) BankTransfer(w http.ResponseWriter, r *http.Request) {
+	claims := auth.MustClaims(r.Context())
+	actorID, _ := uuid.Parse(claims.Subject)
+
+	idemKey := r.Header.Get("Idempotency-Key")
+	if idemKey == "" {
+		writeErr(w, http.StatusBadRequest, CodePaymentIdempotencyKey, "Idempotency-Key header required")
+		return
+	}
+
+	var body bankTransferBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, "invalid json")
+		return
+	}
+	fromID, err := uuid.Parse(body.FromWalletID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, CodeWalletInvalidID, "invalid from_wallet_id")
+		return
+	}
+	amount, err := money.ParseMajor(body.Amount, money.Currency(body.Currency))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, CodeRequestInvalidJSON, err.Error())
+		return
+	}
+
+	if _, err := h.ownerCheck(r.Context(), fromID); err != nil {
+		switch {
+		case errors.Is(err, wallet.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "source wallet not found")
+		default:
+			writeErr(w, http.StatusForbidden, CodeForbidden, "forbidden")
+		}
+		return
+	}
+
+	res, err := h.Payments.BankTransfer(r.Context(), actorID, payment.BankTransferRequest{
+		FromWalletID:  fromID,
+		AccountNumber: body.AccountNumber,
+		BankCode:      body.BankCode,
+		Amount:        amount,
+		Reference:     body.Reference,
+		EndToEndID:    body.EndToEndID,
+		Narration:     body.Narration,
+		IdemKey:       idemKey,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, wallet.ErrInsufficientFunds):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferInsufficient, "insufficient funds")
+		case errors.Is(err, wallet.ErrFrozen):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferWalletFrozen, "wallet frozen")
+		case errors.Is(err, wallet.ErrCurrencyMismatch):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferCurrencyMismatch, "currency mismatch")
+		case errors.Is(err, wallet.ErrNotFound):
+			writeErr(w, http.StatusNotFound, CodeWalletNotFound, "wallet not found")
+		case errors.Is(err, payment.ErrInvalidAccount):
+			writeErr(w, http.StatusBadRequest, CodeBankInvalidAccount, err.Error())
+		case errors.Is(err, payment.ErrLocalDestination):
+			writeErr(w, http.StatusUnprocessableEntity, CodeBankLocalDestination, "destination is local, use wallet transfer")
+		case errors.Is(err, payment.ErrProviderUnavailable):
+			writeErr(w, http.StatusServiceUnavailable, CodeBankProviderDown, "bank transfer unavailable")
+		case errors.Is(err, payment.ErrInProgress):
+			writeErr(w, http.StatusConflict, CodeTransferConflict, "transfer in progress, retry shortly")
+		case errors.Is(err, payment.ErrLimitExceeded):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferLimitExceeded, err.Error())
+		case errors.Is(err, fraud.ErrBlocked):
+			writeErr(w, http.StatusUnprocessableEntity, CodeTransferBlocked, "transaction blocked by fraud checks")
+		default:
+			h.Logger.Error("bank transfer", "err", err,
+				"request_id", httpx.RequestIDFrom(r.Context()))
+			writeErr(w, http.StatusInternalServerError, CodeInternalError, "bank transfer failed")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"transaction_id":      res.TransactionID,
+		"status":              res.Status,
+		"session_id":          res.SessionID,
 		"new_balance_minor":   res.NewBalance,
 		"new_balance_display": money.New(res.NewBalance, money.Currency(res.Currency)).Format(),
 		"currency":            res.Currency,

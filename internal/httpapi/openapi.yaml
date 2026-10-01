@@ -209,6 +209,52 @@ paths:
         '404': { description: WALLET_NOT_FOUND }
         '409': { description: TRANSFER_CONCURRENT_MODIFICATION }
         '422': { description: TRANSFER_INSUFFICIENT_FUNDS / TRANSFER_WALLET_FROZEN / TRANSFER_CURRENCY_MISMATCH / TRANSFER_LIMIT_EXCEEDED / TRANSFER_BLOCKED_FRAUD }
+  /v1/bank-transfers:
+    post:
+      summary: Outbound bank transfer via NIP (MFA step-up required)
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_wallet_id, account_number, bank_code, amount, currency]
+              properties:
+                from_wallet_id: { type: string, format: uuid }
+                account_number: { type: string, example: '0000014579' }
+                bank_code: { type: string, example: '011' }
+                amount: { type: string, example: '5000.50' }
+                currency: { type: string, example: NGN }
+                reference: { type: string }
+                end_to_end_id: { type: string }
+                narration: { type: string }
+      responses:
+        '201': { description: Posted (session_id included) }
+        '400': { description: BANK_INVALID_ACCOUNT / WALLET_INVALID_ID }
+        '404': { description: WALLET_NOT_FOUND }
+        '409': { description: TRANSFER_CONCURRENT_MODIFICATION }
+        '422': { description: TRANSFER_INSUFFICIENT_FUNDS / BANK_LOCAL_DESTINATION / TRANSFER_LIMIT_EXCEEDED / TRANSFER_BLOCKED_FRAUD }
+        '503': { description: BANK_PROVIDER_UNAVAILABLE }
+  /v1/name-enquiry:
+    post:
+      summary: Resolve an account to its holder (NIP pre-transfer step)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_number, bank_code]
+              properties:
+                account_number: { type: string, example: '0000014579' }
+                bank_code: { type: string, example: '011' }
+      responses:
+        '200': { description: Holder name, currency if local }
+        '400': { description: BANK_INVALID_ACCOUNT }
+        '404': { description: account not found }
+        '503': { description: BANK_PROVIDER_UNAVAILABLE }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
