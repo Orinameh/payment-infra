@@ -38,6 +38,24 @@ func TestDummyValidatesTransfer(t *testing.T) {
 	}
 }
 
+func TestDummyReferenceReplay(t *testing.T) {
+	c, _ := NewDummyClient(DummyConfig{Environment: "dev"})
+	ctx := context.Background()
+	req := TransferRequest{FromAccount: "a", ToAccount: "b", ToBankCode: "001",
+		Amount: money.New(1000, money.NGN), Reference: "replay-1"}
+	first, err := c.Transfer(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Transfer(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID != second.SessionID {
+		t.Fatal("same reference must return the original session (NIP dedup)")
+	}
+}
+
 func TestDummyNameEnquiry(t *testing.T) {
 	c, _ := NewDummyClient(DummyConfig{Environment: "dev"})
 	if _, err := c.NameEnquiry(context.Background(), NameEnquiryRequest{}); err == nil {

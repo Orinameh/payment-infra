@@ -712,6 +712,8 @@ func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, CodeTransferConflict, "concurrent modification, retry")
 		case errors.Is(err, payment.ErrLimitExceeded):
 			writeErr(w, http.StatusUnprocessableEntity, CodeTransferLimitExceeded, err.Error())
+		case errors.Is(err, payment.ErrInProgress):
+			writeErr(w, http.StatusConflict, CodeTransferConflict, "transfer in progress, retry shortly")
 		case errors.Is(err, fraud.ErrBlocked):
 			writeErr(w, http.StatusUnprocessableEntity, CodeTransferBlocked, "transaction blocked by fraud checks")
 		case errors.Is(err, fraud.ErrReview):
@@ -755,8 +757,6 @@ func (h *Handler) NameEnquiry(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, payment.ErrInvalidAccount):
 			writeErr(w, http.StatusBadRequest, CodeBankInvalidAccount, err.Error())
-		case errors.Is(err, wallet.ErrNotFound):
-			writeErr(w, http.StatusNotFound, CodeBankInvalidAccount, "account not found")
 		case errors.Is(err, wallet.ErrFrozen):
 			writeErr(w, http.StatusUnprocessableEntity, CodeTransferWalletFrozen, "account frozen")
 		case errors.Is(err, payment.ErrProviderUnavailable):

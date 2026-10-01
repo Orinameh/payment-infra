@@ -16,6 +16,7 @@ import (
 	"payment-infra/internal/httpx"
 	"payment-infra/internal/ledger"
 	"payment-infra/internal/nibss"
+	"payment-infra/internal/nuban"
 	"payment-infra/internal/payment"
 	"payment-infra/internal/platform/db"
 	"payment-infra/internal/user"
@@ -137,6 +138,10 @@ func main() {
 	// rail (local vs NIP). Empty disables numbering; bank transfers
 	// then degrade to provider-unavailable.
 	if code := os.Getenv("BANK_CODE"); code != "" {
+		if err := nuban.ValidateBankCode(code); err != nil {
+			logger.Error("invalid BANK_CODE (want 3 digits)", "err", err)
+			os.Exit(1)
+		}
 		walletSvc.SetBankCode(code)
 		paymentSvc.SetBankCode(code)
 		logger.Info("bank rail enabled", "bank_code", code)

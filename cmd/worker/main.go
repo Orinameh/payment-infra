@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"payment-infra/internal/audit"
 	"payment-infra/internal/crypto"
+	"payment-infra/internal/nuban"
 	"payment-infra/internal/outbox"
 	"payment-infra/internal/platform/db"
 	"payment-infra/internal/queue"
@@ -93,6 +94,10 @@ func main() {
 	// NUBAN backfill shares the wallet service (bank code from env).
 	walletSvc := wallet.NewService(&audit.Recorder{})
 	if code := os.Getenv("BANK_CODE"); code != "" {
+		if err := nuban.ValidateBankCode(code); err != nil {
+			logger.Error("invalid BANK_CODE (want 3 digits)", "err", err)
+			os.Exit(1)
+		}
 		walletSvc.SetBankCode(code)
 	}
 
@@ -148,9 +153,19 @@ func main() {
 	// Retention never touches money tables — only operational buffers.
 	go retention.NewService(pool).RunLoop(ctx, time.Hour)
 
-	// NUBAN backfill for pre-numbering wallets. Self-terminating:
-	// each run assigns a batch until none remain, then no-ops.
+	// NUBAN backfill for pre-numbering wallets. One immediate
+	// catch-up pass at startup (pre-numbering wallets are unresolvable
+	// by local name enquiry until numbered), then hourly steady-state.
+	// Self-terminating: runs no-op once nothing remains.
+	backfill := func(batch int) {
+		if n, err := walletSvc.BackfillAccountNumbers(ctx, pool, batch); err != nil {
+			logger.Error("nuban backfill", "err", err)
+		} else if n > 0 {
+			logger.Info("nuban backfill", "assigned", n)
+		}
+	}
 	go func() {
+		backfill(500)
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
@@ -158,11 +173,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if n, err := walletSvc.BackfillAccountNumbers(ctx, pool, 50); err != nil {
-					logger.Error("nuban backfill", "err", err)
-				} else if n > 0 {
-					logger.Info("nuban backfill", "assigned", n)
-				}
+				backfill(50)
 			}
 		}
 	}()

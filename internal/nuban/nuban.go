@@ -30,6 +30,16 @@ func digits(s string) ([]int, error) {
 	return out, nil
 }
 
+// ValidateBankCode checks a CBN 3-digit institution code. Fail fast at
+// startup: a bad code would otherwise fail every Generate at runtime.
+func ValidateBankCode(code string) error {
+	if len(code) != 3 {
+		return ErrBadBankCode
+	}
+	_, err := digits(code)
+	return err
+}
+
 // CheckDigit computes the NUBAN check digit for a 9-digit serial under
 // a 3-digit bank code: weighted sum mod 10, subtracted from 10
 // (10 maps to 0).

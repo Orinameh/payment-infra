@@ -267,15 +267,20 @@ func (s *Service) checkTierLimit(ctx context.Context, tx pgx.Tx,
 	}
 
 	// 2. Daily limit: sum of debits in the last 24 hours across all
-	//    of the user's wallets in this currency.
+	//    of the user's wallets in this currency. Failed transactions
+	//    are excluded: a reversed bank transfer leaves its (append-only)
+	//    debit entries behind, and counting them would let failures
+	//    eat the user's limit.
 	var dailySum int64
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(SUM(-e.amount), 0)
 		FROM ledger_entries e
 		JOIN wallets w ON w.id = e.wallet_id
+		JOIN transactions t ON t.id = e.transaction_id
 		WHERE w.user_id = $1
 		  AND w.currency = $2
 		  AND e.amount < 0
+		  AND t.status != 'failed'
 		  AND e.created_at > now() - interval '24 hours'`,
 		userID, string(amount.Currency),
 	).Scan(&dailySum)
@@ -353,7 +358,10 @@ func reserveIdem(ctx context.Context, q db.Querier, key, hash string) (*idemReco
 		return nil, errors.New("idempotency: key reused with different payload")
 	}
 	if status == 0 {
-		return nil, errors.New("idempotency: request in flight")
+		// A sibling attempt owns this key (still in Phase 1 or
+		// mid-settlement). ErrInProgress so handlers answer 409,
+		// not 500 — the client should retry with the same key.
+		return nil, fmt.Errorf("%w: key %q", ErrInProgress, key)
 	}
 	return &idemRecord{body: body}, nil
 }

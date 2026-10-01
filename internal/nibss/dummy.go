@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -20,6 +21,12 @@ type DummyClient struct {
 	env         string
 	failureRate float64
 	counter     atomic.Uint64
+	// seen emulates NIP reference idempotency: repeat submissions of
+	// the same reference return the original response instead of
+	// moving money twice. Real NIP dedups on reference; the dummy
+	// must too, or crash-replay tests prove nothing.
+	mu   sync.Mutex
+	seen map[string]*TransferResponse
 }
 
 type DummyConfig struct {
@@ -41,7 +48,7 @@ func NewDummyClient(cfg DummyConfig) (*DummyClient, error) {
 	}
 	slog.Warn("nibss: DUMMY CLIENT ACTIVE — no real NIP traffic will be sent",
 		"environment", env, "failure_rate", cfg.FailureRate)
-	return &DummyClient{env: env, failureRate: cfg.FailureRate}, nil
+	return &DummyClient{env: env, failureRate: cfg.FailureRate, seen: map[string]*TransferResponse{}}, nil
 }
 
 func (c *DummyClient) Mode() string { return "dummy" }
@@ -57,6 +64,21 @@ func (c *DummyClient) Transfer(ctx context.Context,
 	}
 	if req.ToBankCode == "" {
 		return nil, fmt.Errorf("nibss: target bank code required")
+	}
+
+	// Reference replay: same reference returns the original session,
+	// exactly like NIP-side dedup. Empty references bypass (caller bug,
+	// but never collapse distinct transfers into one).
+	if req.Reference != "" {
+		c.mu.Lock()
+		if prev, ok := c.seen[req.Reference]; ok {
+			c.mu.Unlock()
+			slog.Info("nibss: dummy reference replay",
+				"reference", req.Reference, "session_id", prev.SessionID)
+			out := *prev
+			return &out, nil
+		}
+		c.mu.Unlock()
 	}
 
 	n := c.counter.Add(1)
@@ -77,13 +99,25 @@ func (c *DummyClient) Transfer(ctx context.Context,
 		"currency", req.Amount.Currency,
 		"session_id", sessionID)
 
-	return &TransferResponse{
+	res := &TransferResponse{
 		SessionID:    sessionID,
 		Reference:    req.Reference,
 		ResponseCode: "00",
 		Message:      "Approved (dummy)",
 		Amount:       req.Amount,
-	}, nil
+	}
+	if req.Reference != "" {
+		c.mu.Lock()
+		// First writer wins; a racing duplicate keeps the original.
+		if _, ok := c.seen[req.Reference]; !ok {
+			c.seen[req.Reference] = res
+		} else {
+			res = c.seen[req.Reference]
+		}
+		c.mu.Unlock()
+	}
+	out := *res
+	return &out, nil
 }
 
 func (c *DummyClient) NameEnquiry(ctx context.Context,

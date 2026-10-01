@@ -56,7 +56,13 @@ func (s *Service) NameEnquiry(ctx context.Context, accountNumber, bankCode strin
 	if s.bankCode != "" && bankCode == s.bankCode {
 		w, err := s.wallets.GetByAccountNumber(ctx, s.pool, accountNumber)
 		if err != nil {
-			return nil, err // wallet.ErrNotFound → 404
+			if !errors.Is(err, wallet.ErrNotFound) {
+				return nil, err
+			}
+			// Well-formed but unknown: invalid destination, not a
+			// missing resource — the caller's account exists.
+			return nil, fmt.Errorf("%w: unknown local account %q",
+				ErrInvalidAccount, accountNumber)
 		}
 		if w.Status != "active" {
 			return nil, wallet.ErrFrozen
@@ -128,7 +134,7 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 	if req.IdemKey == "" {
 		return nil, errors.New("payment: idempotency key required")
 	}
-	if s.nibss == nil {
+	if s.nibss == nil || s.bankCode == "" {
 		return nil, ErrProviderUnavailable
 	}
 	if err := nuban.Validate(req.AccountNumber, req.BankCode); err != nil {
@@ -142,7 +148,10 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 		if err != nil && !errors.Is(err, wallet.ErrNotFound) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("payment: unknown local account: %w", wallet.ErrNotFound)
+		// Well-formed but unknown under our own code: a bad
+		// destination, not a missing wallet (the source exists).
+		return nil, fmt.Errorf("%w: unknown local account %q",
+			ErrInvalidAccount, req.AccountNumber)
 	}
 
 	key := "banktransfer:" + req.IdemKey
@@ -252,6 +261,16 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 	if err != nil {
 		return nil, fmt.Errorf("payment: bank transfer reserve: %w", err)
 	}
+	// Crash-replay path skips Phase 1's body, so fromAcct was never
+	// set. Re-resolve before the provider call — without this the
+	// recovery path sends FromAccount: "" and fails validation.
+	if fromAcct == "" && out != nil && out.Status == "pending" {
+		acct, rerr := s.wallets.EnsureAccountNumber(ctx, s.pool, req.FromWalletID)
+		if rerr != nil {
+			return nil, fmt.Errorf("payment: resolve source account: %w", rerr)
+		}
+		fromAcct = acct
+	}
 	if out.Status == "posted" {
 		return out, nil // replay of a completed transfer
 	}
@@ -271,13 +290,26 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 	// Phase 3: finalize or reverse.
 	if perr == nil {
 		finErr := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, `
+			// Claim the pending→posted transition. Zero rows means a
+			// racing reversal (or duplicate finalize) already moved
+			// this transaction — resolve from the stored record
+			// instead of last-writer-winning the status.
+			tag, err := tx.Exec(ctx, `
 				UPDATE transactions
 				SET status = 'posted',
 				    metadata = metadata || jsonb_build_object('session_id', $1, 'provider', $2)
-				WHERE id = $3`, pres.SessionID, s.nibss.Mode(), out.TransactionID)
+				WHERE id = $3 AND status = 'pending'`,
+				pres.SessionID, s.nibss.Mode(), out.TransactionID)
 			if err != nil {
 				return err
+			}
+			if tag.RowsAffected() == 0 {
+				stored, rerr := s.replayStoredResult(ctx, key)
+				if rerr != nil {
+					return rerr
+				}
+				*out = *stored
+				return nil
 			}
 			if err := s.outbox.Emit(ctx, tx, "transaction", out.TransactionID,
 				"payments.bank_transfer_posted", map[string]any{
@@ -310,7 +342,26 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 
 	// Provider failed: reverse the debit so the user is whole, mark the
 	// attempt failed, and release the idempotency key for a client retry.
+	// The failed-claim comes first: if a racing finalize already posted
+	// this transaction, the provider in fact succeeded — return that
+	// success instead of reversing settled money.
 	revErr := db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE transactions
+			SET status = 'failed',
+			    metadata = metadata || jsonb_build_object('error', $1)
+			WHERE id = $2 AND status = 'pending'`, perr.Error(), out.TransactionID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			stored, rerr := s.replayStoredResult(ctx, key)
+			if rerr != nil {
+				return rerr
+			}
+			*out = *stored
+			return errAlreadySettled
+		}
 		settlement, err := s.wallets.Create(ctx, tx,
 			SettlementUserID, string(req.Amount.Currency))
 		if err != nil {
@@ -336,19 +387,52 @@ func (s *Service) BankTransfer(ctx context.Context, actorID uuid.UUID,
 		}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE transactions
-			SET status = 'failed',
-			    metadata = metadata || jsonb_build_object('error', $1)
-			WHERE id = $2`, perr.Error(), out.TransactionID); err != nil {
-			return err
-		}
 		_, err = tx.Exec(ctx, `DELETE FROM idempotency_keys WHERE key = $1`, key)
 		return err
 	})
 	if revErr != nil {
+		if errors.Is(revErr, errAlreadySettled) {
+			return out, nil
+		}
+		if errors.Is(revErr, ErrInProgress) {
+			return nil, revErr
+		}
 		return nil, fmt.Errorf("payment: bank transfer failed (%v) and reversal failed (%v)",
 			perr, revErr)
 	}
 	return nil, fmt.Errorf("payment: bank transfer failed: %w", perr)
+}
+
+// errAlreadySettled signals that a reversal lost its race: the
+// transaction it meant to fail was finalized posted instead. The
+// caller returns the posted result as success.
+var errAlreadySettled = errors.New("payment: transaction already settled")
+
+// replayStoredResult resolves a lost finalize/reverse race from the
+// idempotency record: 201 → the winner's posted result; 202 → the
+// winner hasn't finished, caller retries; no row → the key was
+// released by a completed reversal, the transfer is dead.
+func (s *Service) replayStoredResult(ctx context.Context, key string) (*BankTransferResult, error) {
+	var (
+		status int
+		body   []byte
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(response_status, 0), COALESCE(response_body, 'null'::jsonb)
+		FROM idempotency_keys WHERE key = $1`, key,
+	).Scan(&status, &body)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("payment: bank transfer already reversed")
+		}
+		return nil, err
+	}
+	if status == 201 {
+		var out BankTransferResult
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
+	return nil, ErrInProgress
 }

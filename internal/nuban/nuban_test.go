@@ -42,6 +42,17 @@ func TestGenerateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidateBankCode(t *testing.T) {
+	if err := ValidateBankCode("011"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "01", "0111", "ABC", "01X"} {
+		if err := ValidateBankCode(bad); err == nil {
+			t.Fatalf("%q must fail", bad)
+		}
+	}
+}
+
 func TestBadInputs(t *testing.T) {
 	if err := Validate("123", "011"); err == nil {
 		t.Fatal("short number must fail")
