@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE verification_tokens (
     id           BIGSERIAL PRIMARY KEY,
     user_id      UUID NOT NULL REFERENCES users(id),
@@ -14,6 +15,9 @@ CREATE TABLE verification_tokens (
 CREATE INDEX idx_vtokens_user ON verification_tokens(user_id, purpose);
 CREATE INDEX idx_vtokens_lookup ON verification_tokens(token_hash)
     WHERE consumed_at IS NULL;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS verification_tokens;
+-- +goose StatementEnd

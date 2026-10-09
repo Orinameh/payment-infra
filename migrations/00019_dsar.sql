@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 -- NDPA 2023 data-subject rights. Erasure never deletes financial
 -- records (AML retention: 5 years) — it removes PII and closes the
 -- account. dsar_requests tracks every request for the DPO.
@@ -14,7 +15,10 @@ CREATE TABLE IF NOT EXISTS dsar_requests (
     completed_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_dsar_user ON dsar_requests(user_id, created_at DESC);
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS dsar_requests;
 ALTER TABLE users DROP COLUMN IF EXISTS erasure_at;
+-- +goose StatementEnd

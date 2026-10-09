@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE users (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email             CITEXT NOT NULL UNIQUE,
@@ -34,7 +35,10 @@ CREATE TABLE user_consents (
 );
 
 CREATE INDEX idx_consents_user ON user_consents(user_id, created_at DESC);
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS user_consents;
 DROP TABLE IF EXISTS users;
+-- +goose StatementEnd

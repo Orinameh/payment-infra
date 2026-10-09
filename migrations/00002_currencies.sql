@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE currencies (
     code     CHAR(3) PRIMARY KEY,
     name     TEXT NOT NULL,
@@ -15,6 +16,9 @@ INSERT INTO currencies (code, name, decimals, symbol) VALUES
     ('GBP', 'British Pound', 2, '£'),
     ('JPY', 'Japanese Yen', 0, '¥')
 ON CONFLICT (code) DO NOTHING;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS currencies;
+-- +goose StatementEnd

@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE refresh_tokens (
     id           BIGSERIAL PRIMARY KEY,
     user_id      UUID NOT NULL REFERENCES users(id),
@@ -10,6 +11,9 @@ CREATE TABLE refresh_tokens (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_refresh_user ON refresh_tokens(user_id) WHERE revoked_at IS NULL;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS refresh_tokens;
+-- +goose StatementEnd

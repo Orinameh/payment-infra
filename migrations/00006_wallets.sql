@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE wallets (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id        UUID NOT NULL REFERENCES users(id),
@@ -16,6 +17,9 @@ CREATE TABLE wallets (
 );
 CREATE INDEX idx_wallets_user ON wallets(user_id);
 CREATE INDEX idx_wallets_status ON wallets(status);
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS wallets;
+-- +goose StatementEnd

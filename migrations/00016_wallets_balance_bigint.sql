@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 -- The money model is int64 minor units (kobo/cents). 00006 created
 -- wallets.balance as NUMERIC(28,8), which the Go code scans into int64
 -- and updates with integer deltas. NUMERIC breaks the scan, the
@@ -8,6 +9,9 @@
 -- the cast truncates nothing; fail loudly if it would.
 ALTER TABLE wallets ALTER COLUMN balance TYPE BIGINT USING (balance::BIGINT);
 ALTER TABLE wallets ALTER COLUMN balance SET DEFAULT 0;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 ALTER TABLE wallets ALTER COLUMN balance TYPE NUMERIC(28,8) USING (balance::NUMERIC(28,8));
+-- +goose StatementEnd

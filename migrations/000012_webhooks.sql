@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE webhook_endpoints (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID NOT NULL REFERENCES users(id),
@@ -33,7 +34,10 @@ CREATE TABLE webhook_deliveries (
 );
 CREATE INDEX idx_webhook_pending ON webhook_deliveries(next_attempt_at)
     WHERE status = 'pending' AND locked_until IS NULL;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS webhook_deliveries;
 DROP TABLE IF EXISTS webhook_endpoints;
+-- +goose StatementEnd

@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE ledger_snapshots (
     id            BIGSERIAL PRIMARY KEY,
     wallet_id     UUID NOT NULL REFERENCES wallets(id),
@@ -19,7 +20,10 @@ CREATE TABLE reconciliation_runs (
     drift_details   JSONB NOT NULL DEFAULT '[]'::jsonb,
     completed_at    TIMESTAMPTZ
 );
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS reconciliation_runs;
 DROP TABLE IF EXISTS ledger_snapshots;
+-- +goose StatementEnd

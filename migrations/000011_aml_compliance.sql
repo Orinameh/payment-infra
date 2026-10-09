@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 -- AML/CFT/CPF: real-time monitoring per CBN Baseline Standards (2025).
 CREATE TABLE aml_alerts (
     id                  BIGSERIAL PRIMARY KEY,
@@ -41,7 +42,10 @@ VALUES
     (2, 'NGN',  1000000000,   500000000,       NULL),
     (3, 'NGN', 10000000000,  5000000000,       NULL)
 ON CONFLICT (kyc_tier) DO NOTHING;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS transaction_limits;
 DROP TABLE IF EXISTS aml_alerts;
+-- +goose StatementEnd

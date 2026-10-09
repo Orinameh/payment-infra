@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 CREATE TABLE outbox (
     id              BIGSERIAL PRIMARY KEY,
     aggregate_type  TEXT NOT NULL,
@@ -9,6 +10,9 @@ CREATE TABLE outbox (
     published_at    TIMESTAMPTZ
 );
 CREATE INDEX idx_outbox_unpublished ON outbox(id) WHERE published_at IS NULL;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS outbox;
+-- +goose StatementEnd

@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 -- Reconciles users table with application code (user.Service).
 -- The original 00003 created status DEFAULT 'active' without 'pending'
 -- and omitted every column the Go code reads/writes (phone,
@@ -28,8 +29,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INT NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 ALTER TABLE users DROP COLUMN IF EXISTS last_login_at;
 ALTER TABLE users DROP COLUMN IF EXISTS locked_until;
 ALTER TABLE users DROP COLUMN IF EXISTS failed_login_count;
@@ -40,3 +43,4 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
 ALTER TABLE users ADD CONSTRAINT users_status_check
     CHECK (status IN ('active','suspended','closed'));
 ALTER TABLE users ALTER COLUMN status SET DEFAULT 'active';
+-- +goose StatementEnd

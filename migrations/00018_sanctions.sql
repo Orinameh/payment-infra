@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 -- Sanctions screening (OFAC / UN / EU consolidated lists, CBN AML/CFT).
 -- The list itself is fed by an external vendor job (out of scope);
 -- this table is the join point. Matching is exact on CITEXT (case
@@ -10,6 +11,9 @@ CREATE TABLE IF NOT EXISTS sanctioned_names (
     listed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sanctioned_source ON sanctioned_names(source);
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 DROP TABLE IF EXISTS sanctioned_names;
+-- +goose StatementEnd
