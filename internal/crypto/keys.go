@@ -21,12 +21,19 @@ var envelopeMagic = []byte("PAYENC1:")
 
 // KeyRing holds the active encryption key plus retired keys for
 // decryption. Rotation without a ring orphans every existing row the
-// moment the env var changes — the ring is what makes rotation safe:
+// moment the env var changes — the ring is what makes rotation safe.
 //
-//  1. Add the new key to ENCRYPTION_KEYS (old stays for reads).
-//  2. Switch the first (active) entry to the new id — new writes use
-//     it, old rows still decrypt via their envelope key id.
-//  3. Optionally re-encrypt old rows, then drop the retired key.
+// Safe rollout order (all instances must hold both keys before the
+// flip, because the ring is loaded once at boot and rotation needs a
+// restart — a pod without the new key fails closed with
+// ErrUnknownKeyID on rows written by the new active key):
+//
+//  1. Deploy ENCRYPTION_KEYS="old:<b64>,new:<b64>" everywhere
+//     (old stays first = active; new is present for reads).
+//  2. Deploy ENCRYPTION_KEYS="new:<b64>,old:<b64>" everywhere
+//     (new writes begin; old rows still decrypt via envelope key id).
+//  3. Re-encrypt old rows (cmd/reencrypt run), confirm with
+//     cmd/reencrypt plan, then deploy ENCRYPTION_KEYS="new:<b64>".
 //
 // Envelope layout: magic + keyID length (1 byte) + keyID + nonce +
 // ciphertext+tag. Rows written before versioning (raw GCM output) are
@@ -93,7 +100,10 @@ func (r *KeyRing) ActiveID() string { return r.active }
 
 // Encrypt seals with the active key inside a versioned envelope.
 func (r *KeyRing) Encrypt(plaintext []byte) ([]byte, error) {
-	enc := r.keys[r.active]
+	enc, ok := r.keys[r.active]
+	if !ok || enc == nil {
+		return nil, fmt.Errorf("crypto: active key %q not in ring", r.active)
+	}
 	raw, err := enc.Encrypt(plaintext)
 	if err != nil {
 		return nil, err
@@ -131,13 +141,49 @@ func (r *KeyRing) Decrypt(ciphertext []byte) ([]byte, error) {
 		}
 		return enc.Decrypt(rest[1+n:])
 	}
-	for id, enc := range r.keys {
+	for _, enc := range r.keys {
 		if pt, err := enc.Decrypt(ciphertext); err == nil {
-			_ = id
 			return pt, nil
 		}
 	}
 	return nil, fmt.Errorf("crypto: decrypt: no key opened the row")
+}
+
+// EnvelopeKeyID returns the key id carried by a versioned envelope.
+// ok=false means a legacy pre-envelope row (raw nonce||ciphertext).
+// A malformed envelope returns ErrBadEnvelope. The minimum-length
+// check mirrors Decrypt (id + 12-byte nonce must be present), so a
+// truncated envelope can never classify as a healthy active-key row.
+func EnvelopeKeyID(ciphertext []byte) (id string, ok bool, err error) {
+	if !bytes.HasPrefix(ciphertext, envelopeMagic) {
+		return "", false, nil
+	}
+	rest := ciphertext[len(envelopeMagic):]
+	if len(rest) < 1 {
+		return "", true, ErrBadEnvelope
+	}
+	n := int(rest[0])
+	if n == 0 || n > 32 || len(rest) < 1+n+12 {
+		return "", true, ErrBadEnvelope
+	}
+	return string(rest[1 : 1+n]), true, nil
+}
+
+// NeedsReencrypt reports whether ct should be rewritten under the
+// active key: legacy rows always, versioned rows whose key id differs
+// from active. Empty/NULL ciphertexts (nil) never need work.
+func NeedsReencrypt(ct []byte, activeID string) bool {
+	if len(ct) == 0 {
+		return false
+	}
+	id, ok, err := EnvelopeKeyID(ct)
+	if err != nil {
+		return true // malformed: try a decrypt-and-rewrite; failures surface at Run
+	}
+	if !ok {
+		return true // legacy pre-envelope row
+	}
+	return id != activeID
 }
 
 // DecryptString mirrors Encryptor for string fields.

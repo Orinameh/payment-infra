@@ -345,11 +345,29 @@ Vault, Kubernetes Secret). Never commit it.
 
 ### Key rotation
 
-`ENCRYPTION_KEYS="k2:<b64>,k1:<b64>"` (first entry is active) replaces
-the single-key variable. Ciphertext carries its key id (`PAYENC1:` envelope),
-so rotation is: deploy with the new key appended (old stays active),
-flip the order so the new key is first, then retire the old key once
-re-encryption is confirmed. Pre-envelope rows decrypt via key trial.
+The keyring is loaded once at boot, so rotation needs a restart and a
+strict rollout order — a pod without the new key fails closed with
+`crypto: unknown key id` on rows the new active key wrote:
+
+1. Append: deploy `ENCRYPTION_KEYS="k1:<b64>,k2:<b64>"` everywhere
+   (old stays first = active; new is present for reads).
+2. Flip: deploy `ENCRYPTION_KEYS="k2:<b64>,k1:<b64>"` everywhere
+   (new writes begin; old rows still decrypt via envelope key id).
+3. Re-encrypt, then retire: run the census, rewrite stale rows, confirm,
+   then deploy `ENCRYPTION_KEYS="k2:<b64>"`:
+
+```bash
+make reencrypt-plan   # exit 3 + per-column by_key counts while stale rows remain
+make reencrypt-run    # decrypt-with-ring, encrypt-with-active, compare-and-swap writeback
+make reencrypt-plan   # exit 0 "retirable" when every non-null row is under k2
+```
+
+`reencrypt run` is idempotent and safe beside live traffic (rows
+changed concurrently are skipped via compare-and-swap and picked up on
+the next run). It fails closed on the first undecryptable row — that
+means `ENCRYPTION_KEYS` is missing a key id, not that the row can be
+skipped. Pre-envelope (legacy) rows always count as stale and are
+rewritten with envelopes.
 
 Per PCI DSS 4.0.1 Requirement 3.5.1.2, disk-level encryption alone does not satisfy the requirement — application-layer encryption is mandatory for sensitive financial identifiers. AES-256-GCM is an AEAD cipher: it authenticates before decrypting, so any ciphertext tampering causes `Decrypt` to fail rather than returning corrupted plaintext.
 

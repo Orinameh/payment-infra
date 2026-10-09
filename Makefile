@@ -1,5 +1,5 @@
 .PHONY: help setup build test test-integration lint vuln migrate-up migrate-down \
-        migrate-status migrate-create docker-build docker-up docker-down docker-nuke \
+        migrate-status migrate-create reencrypt-plan reencrypt-run docker-build docker-up docker-down docker-nuke \
         docker-logs run clean
 
 GOLANGCI_VERSION ?= v2.1.6
@@ -29,6 +29,7 @@ build: ## Build all binaries into ./bin
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/api     ./cmd/api
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/worker  ./cmd/worker
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/migrate ./cmd/migrate
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/reencrypt ./cmd/reencrypt
 
 test: ## Run tests with race detector
 	go test -race -count=1 ./...
@@ -63,6 +64,14 @@ migrate-create: ## Create a migration: make migrate-create NAME=add_foo
 	@test -n "$(NAME)" || (echo "NAME is required: make migrate-create NAME=add_foo" && exit 1)
 	@test -x $(GOOSE) || go install github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION)
 	$(GOOSE) -dir ./migrations -s create $(NAME) sql
+
+reencrypt-plan: ## Census of encrypted rows per key id (needs DATABASE_URL + ENCRYPTION_KEYS ring)
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is required" && exit 1)
+	DATABASE_URL="$(DATABASE_URL)" go run ./cmd/reencrypt plan
+
+reencrypt-run: ## Re-encrypt stale rows under the active key (needs DATABASE_URL + ENCRYPTION_KEYS ring)
+	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is required" && exit 1)
+	DATABASE_URL="$(DATABASE_URL)" go run ./cmd/reencrypt run
 
 docker-build: ## Build compose images
 	docker compose build
